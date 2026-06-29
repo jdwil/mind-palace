@@ -73,6 +73,8 @@ pub enum PageType {
     Entity,
     Decision,
     Leaf,
+    Sop,
+    Skill,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

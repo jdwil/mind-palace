@@ -19,6 +19,8 @@ pub enum LintCode {
     BrokenLink,
     Orphan,
     TitleSlugMismatch,
+    MissingSopSection,
+    MissingSkillSection,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +72,34 @@ pub fn lint_page(page: &Page, graph: Option<&KnowledgeGraph>) -> Vec<LintIssue> 
                 expected_slug
             ),
         });
+    }
+
+    // SOP pages must have required sections
+    if page.page_type == super::value_objects::PageType::Sop {
+        let required = ["Prerequisites", "Steps", "Constraints", "Verification"];
+        for &heading in &required {
+            if !page.sections.iter().any(|s| s.heading == heading) {
+                issues.push(LintIssue {
+                    code: LintCode::MissingSopSection,
+                    severity: Severity::Warning,
+                    message: format!("SOP page missing required section: '{heading}'"),
+                });
+            }
+        }
+    }
+
+    // Skill pages must have required sections
+    if page.page_type == super::value_objects::PageType::Skill {
+        let required = ["When to Use", "Prompt Pattern", "Example", "Limitations"];
+        for &heading in &required {
+            if !page.sections.iter().any(|s| s.heading == heading) {
+                issues.push(LintIssue {
+                    code: LintCode::MissingSkillSection,
+                    severity: Severity::Warning,
+                    message: format!("Skill page missing required section: '{heading}'"),
+                });
+            }
+        }
     }
 
     if let Some(kg) = graph {

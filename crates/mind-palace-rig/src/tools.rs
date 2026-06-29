@@ -223,7 +223,7 @@ pub struct WikiCreateArgs {
     pub slug: String,
     pub summary: String,
     pub sections: Vec<SectionInput>,
-    /// One of: Index, Concept, Entity, Decision, Leaf
+    /// One of: Index, Concept, Entity, Decision, Leaf, Sop, Skill
     pub page_type: String,
     pub links: Option<Vec<String>>,
 }
@@ -358,7 +358,7 @@ pub struct WikiListTool {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct WikiListArgs {
-    /// Filter by page type: Index, Concept, Entity, Decision, Leaf
+    /// Filter by page type: Index, Concept, Entity, Decision, Leaf, Sop, Skill
     pub page_type: Option<String>,
     /// Max results (default 20)
     pub limit: Option<usize>,
@@ -420,6 +420,8 @@ fn parse_page_type(s: &str) -> PageType {
         "Concept" => PageType::Concept,
         "Entity" => PageType::Entity,
         "Decision" => PageType::Decision,
+        "Sop" => PageType::Sop,
+        "Skill" => PageType::Skill,
         _ => PageType::Leaf,
     }
 }
