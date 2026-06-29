@@ -1,0 +1,21 @@
+[package]
+name = "mind-palace-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mind-palace-core = { workspace = true }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

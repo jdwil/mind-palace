@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "crates/mind-palace-core",
+    "crates/mind-palace-infra",
+    "crates/mind-palace-rig",
+    "crates/mind-palace-web",
+    "crates/mind-palace-mcp",
+    "crates/mind-palace",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/jdwilliams/mind-palace"
+
+[workspace.dependencies]
+mind-palace-core = { path = "crates/mind-palace-core" }
+mind-palace-infra = { path = "crates/mind-palace-infra" }
+mind-palace-rig = { path = "crates/mind-palace-rig" }
+
+async-trait = "0.1"
+aws-config = "1"
+aws-sdk-s3 = "1"
+aws-sdk-dynamodb = "1"
+aws-sdk-s3vectors = "1"
+aws-sdk-bedrockruntime = "1"
+aws-smithy-types = "1"
+axum = "0.8"
+axum-extra = { version = "0.10", features = ["typed-header", "cookie"] }
+chrono = { version = "0.4", features = ["serde"] }
+jsonwebtoken = "9"
+petgraph = "0.7"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+rig-core = "0.39"
+rmcp = { version = "1.8", features = ["server", "macros", "transport-io", "schemars"] }
+schemars = "1"

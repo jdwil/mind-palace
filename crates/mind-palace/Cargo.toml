@@ -1,0 +1,27 @@
+[package]
+name = "mind-palace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[example]]
+name = "basic_usage"
+path = "../../examples/basic_usage.rs"
+
+[dependencies]
+mind-palace-core.workspace = true
+mind-palace-infra.workspace = true
+mind-palace-rig.workspace = true
+
+async-trait.workspace = true
+aws-config.workspace = true
+aws-sdk-s3.workspace = true
+aws-sdk-dynamodb.workspace = true
+aws-sdk-s3vectors.workspace = true
+aws-sdk-bedrockruntime.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true

@@ -1,0 +1,9 @@
+/target
+.env
+*.swp
+*.swo
+
+# Web UI
+web/node_modules/
+web/.svelte-kit/
+web/dist/

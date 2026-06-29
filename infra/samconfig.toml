@@ -1,0 +1,11 @@
+# Default config for `sam deploy --guided` (regenerated on first run)
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "mind-palace-dev"
+resolve_s3 = true
+s3_prefix = "mind-palace"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_NAMED_IAM"
+parameter_overrides = "Environment=dev"
