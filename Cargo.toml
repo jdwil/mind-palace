@@ -6,6 +6,7 @@ members = [
     "crates/mind-palace-web",
     "crates/mind-palace-mcp",
     "crates/mind-palace",
+    "crates/mind-palace-dream",
 ]
 resolver = "2"
 
@@ -40,7 +41,9 @@ tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 rig-core = "0.39"
+rig-bedrock = "0.39"
 rmcp = { version = "1.8", features = ["server", "macros", "transport-io", "schemars"] }
 schemars = "1"

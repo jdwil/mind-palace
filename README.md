@@ -43,7 +43,9 @@ Deploy the required AWS resources:
 
 ```bash
 cd infra/
-sam build && sam deploy --guided
+terraform init
+terraform plan
+terraform apply
 ```
 
 See [docs/infrastructure.md](docs/infrastructure.md) for details on what gets created and cost estimates (~$0.06/month for personal use).
@@ -56,12 +58,16 @@ mind-palace/
 │   ├── mind-palace-core/    # Domain: entities, graph, linting, service, ports
 │   ├── mind-palace-infra/   # AWS adapters: S3, DynamoDB, S3 Vectors, Bedrock
 │   ├── mind-palace-rig/     # Rig SDK: 6 tools + VectorStoreIndex
+│   ├── mind-palace-dream/   # Dreaming process: ECS task for knowledge consolidation
+│   ├── mind-palace-mcp/     # MCP server (stdio, for CLI agents)
+│   ├── mind-palace-web/     # Web API server (Axum + Google SSO)
 │   └── mind-palace/         # Facade: builder API
+├── contrib/
+│   └── kiro/                # Kiro CLI adapter for log shipping
 ├── docs/
 │   ├── spec.md              # Full implementation spec
 │   └── infrastructure.md    # AWS resource requirements
-└── infra/
-    └── template.yaml        # SAM/CloudFormation template
+└── infra/                   # Terraform (all infrastructure)
 ```
 
 ## Agent Tools

@@ -25,4 +25,7 @@ pub enum MindPalaceError {
 
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    #[error("changelog error: {0}")]
+    Changelog(String),
 }

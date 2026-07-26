@@ -1,3 +1,4 @@
+pub mod changelog;
 pub mod embedding;
 pub mod graph;
 pub mod page_store;

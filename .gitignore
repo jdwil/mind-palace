@@ -7,3 +7,9 @@
 web/node_modules/
 web/.svelte-kit/
 web/dist/
+
+# Terraform
+infra/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan

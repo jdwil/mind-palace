@@ -7,6 +7,7 @@ use super::page::{Page, ReadLevel};
 use super::tenant::TenantContext;
 use super::value_objects::{EdgeKind, PageType, Section, Slug, Visibility};
 use crate::error::MindPalaceError;
+use crate::ports::changelog::{ChangeAction, ChangelogEntry, ChangelogStore};
 use crate::ports::embedding::EmbeddingPort;
 use crate::ports::graph::{GraphEdgeData, GraphNodeData, GraphStore};
 use crate::ports::page_store::PageStore;
@@ -50,6 +51,7 @@ pub struct WikiService {
     embedding: Arc<dyn EmbeddingPort>,
     graph_store: Arc<dyn GraphStore>,
     graph: Arc<RwLock<KnowledgeGraph>>,
+    changelog: Option<Arc<dyn ChangelogStore>>,
 }
 
 impl WikiService {
@@ -66,7 +68,14 @@ impl WikiService {
             embedding,
             graph_store,
             graph,
+            changelog: None,
         }
+    }
+
+    /// Attach a changelog store for recording mutations.
+    pub fn with_changelog(mut self, store: Arc<dyn ChangelogStore>) -> Self {
+        self.changelog = Some(store);
+        self
     }
 
     pub async fn create_page(
@@ -140,6 +149,19 @@ impl WikiService {
         }
 
         let _ = ctx; // used for future access control
+
+        if let Some(ref changelog) = self.changelog {
+            let entry = ChangelogEntry {
+                timestamp: chrono::Utc::now(),
+                slug: page.slug.clone(),
+                page_id: page.id.clone(),
+                action: ChangeAction::Created,
+                agent_id: None,
+                summary: Some(page.summary.clone()),
+            };
+            changelog.append(&entry).await?;
+        }
+
         Ok((page, issues))
     }
 
@@ -196,6 +218,18 @@ impl WikiService {
             page_type: page.page_type.clone(),
         };
         self.graph_store.save_node(&node_data).await?;
+
+        if let Some(ref changelog) = self.changelog {
+            let entry = ChangelogEntry {
+                timestamp: chrono::Utc::now(),
+                slug: page.slug.clone(),
+                page_id: page.id.clone(),
+                action: ChangeAction::Updated,
+                agent_id: None,
+                summary: Some(page.summary.clone()),
+            };
+            changelog.append(&entry).await?;
+        }
 
         Ok((page, issues))
     }
@@ -297,6 +331,19 @@ impl WikiService {
         self.graph_store.delete_node(&page.id).await?;
         let mut g = self.graph.write().await;
         g.remove_node(&page.id);
+
+        if let Some(ref changelog) = self.changelog {
+            let entry = ChangelogEntry {
+                timestamp: chrono::Utc::now(),
+                slug: page.slug.clone(),
+                page_id: page.id.clone(),
+                action: ChangeAction::Deleted,
+                agent_id: None,
+                summary: None,
+            };
+            changelog.append(&entry).await?;
+        }
+
         Ok(())
     }
 
