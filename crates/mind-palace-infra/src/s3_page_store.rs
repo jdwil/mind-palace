@@ -32,6 +32,7 @@ impl S3PageStore {
         let tenant_segment = match visibility {
             Visibility::General => "general".to_string(),
             Visibility::Tenant(tid) => tid.0.clone(),
+            Visibility::User(uid) => format!("user-{uid}"),
         };
         format!(
             "{}/{}/pages/{}.md",
@@ -45,6 +46,9 @@ impl S3PageStore {
         let mut prefixes = vec![format!("{}/general/pages/", self.config.prefix)];
         for tid in &ctx.visible_tenants {
             prefixes.push(format!("{}/{}/pages/", self.config.prefix, tid.0));
+        }
+        if let Some(uid) = &ctx.user_id {
+            prefixes.push(format!("{}/user-{}/pages/", self.config.prefix, uid));
         }
         prefixes
     }

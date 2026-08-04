@@ -64,6 +64,7 @@ impl TenantId {
 pub enum Visibility {
     General,
     Tenant(TenantId),
+    User(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

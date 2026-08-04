@@ -75,7 +75,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         graph,
     ));
 
-    let ctx = TenantContext::global();
+    let ctx = {
+        let mut ctx = TenantContext::global();
+        if let Ok(user_id) = std::env::var("MIND_PALACE_USER_ID") {
+            ctx = ctx.with_user(user_id);
+        }
+        ctx
+    };
+
+    // User name is available for display/attribution but doesn't affect visibility
+    if let Ok(user_name) = std::env::var("MIND_PALACE_USER_NAME") {
+        eprintln!("Mind Palace MCP: user={}", user_name);
+    }
+
     let server = MindPalaceMcpServer::new(service, ctx);
 
     let service = server.serve(stdio()).await.inspect_err(|e| {

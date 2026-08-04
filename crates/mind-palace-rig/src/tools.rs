@@ -226,6 +226,8 @@ pub struct WikiCreateArgs {
     /// One of: Index, Concept, Entity, Decision, Leaf, Sop, Skill
     pub page_type: String,
     pub links: Option<Vec<String>>,
+    /// Page visibility: "general" (default) or "user" (scoped to the current user only)
+    pub visibility: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -271,7 +273,12 @@ impl Tool for WikiCreateTool {
             summary: args.summary,
             sections,
             page_type: parse_page_type(&args.page_type),
-            visibility: Visibility::General,
+            visibility: match args.visibility.as_deref() {
+                Some("user") => {
+                    Visibility::User(self.ctx.user_id().unwrap_or("unknown").to_string())
+                }
+                _ => Visibility::General,
+            },
             links,
         };
         let (page, issues) = self.service.create_page(input, &self.ctx).await?;

@@ -63,6 +63,10 @@ pub struct CreateParams {
     #[schemars(description = "One of: Index, Concept, Entity, Decision, Leaf")]
     pub page_type: String,
     pub links: Option<Vec<String>>,
+    #[schemars(
+        description = "Page visibility: 'general' (default, everyone sees it) or 'user' (only the current user sees it). Use 'user' only for personal preferences, context, or opinions that should not apply to other users."
+    )]
+    pub visibility: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -214,7 +218,12 @@ impl MindPalaceMcpServer {
             summary: params.summary,
             sections,
             page_type: parse_page_type(&params.page_type),
-            visibility: Visibility::General,
+            visibility: match params.visibility.as_deref() {
+                Some("user") => {
+                    Visibility::User(self.ctx.user_id().unwrap_or("unknown").to_string())
+                }
+                _ => Visibility::General,
+            },
             links,
         };
         let (page, issues) = self

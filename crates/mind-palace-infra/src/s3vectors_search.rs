@@ -88,12 +88,15 @@ impl VectorSearchPort for S3VectorsSearch {
 
         // Build filter for tenant visibility
         if ctx.tenant_id.is_some() {
-            let visible: Vec<Document> = ctx
+            let mut visible: Vec<Document> = ctx
                 .visible_tenants
                 .iter()
                 .map(|t| Document::String(t.0.clone()))
                 .chain(std::iter::once(Document::String("general".to_string())))
                 .collect();
+            if let Some(uid) = &ctx.user_id {
+                visible.push(Document::String(format!("user-{uid}")));
+            }
             let filter = Document::Object(
                 [(
                     "visibility".to_string(),
@@ -154,6 +157,7 @@ impl VectorSearchPort for S3VectorsSearch {
         let visibility_str = match &metadata.visibility {
             Visibility::General => "general".to_string(),
             Visibility::Tenant(tid) => tid.0.clone(),
+            Visibility::User(uid) => format!("user-{uid}"),
         };
 
         let meta_json = serde_json::json!({

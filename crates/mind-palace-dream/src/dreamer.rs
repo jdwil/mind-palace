@@ -30,6 +30,8 @@ pub struct DreamConfig {
     pub log_prefix: String,
     // LLM config
     pub llm_model_id: String,
+    // User mapping: agent_id → user_id (e.g., "kiro-jd" → "dc203071-...")
+    pub user_map: std::collections::HashMap<String, String>,
 }
 
 impl DreamConfig {
@@ -48,6 +50,10 @@ impl DreamConfig {
             log_prefix: env::var("MP_LOG_PREFIX").unwrap_or_else(|_| "sessions".into()),
             llm_model_id: env::var("MP_LLM_MODEL_ID")
                 .unwrap_or_else(|_| "anthropic.claude-sonnet-4-20250514-v1:0".into()),
+            user_map: env::var("MP_USER_MAP")
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
         })
     }
 }
@@ -271,7 +277,15 @@ impl Dreamer {
 
         // Build fresh tool instances for this call (tools are moved into the agent builder)
         let service = self.wiki_service();
-        let ctx = TenantContext::global();
+        // Resolve agent_id → user_id via config map, fall back to agent_id itself
+        let agent_id = extract_agent_id(key);
+        let user_id = self
+            .config
+            .user_map
+            .get(agent_id)
+            .cloned()
+            .unwrap_or_else(|| agent_id.to_string());
+        let ctx = TenantContext::global().with_user(user_id);
 
         let search_tool = mind_palace_rig::tools::WikiSearchTool {
             service: service.clone(),
@@ -303,6 +317,7 @@ impl Dreamer {
         let agent = bedrock_client
             .agent(&self.config.llm_model_id)
             .preamble(DREAMER_SYSTEM_PROMPT)
+            .default_max_turns(20)
             .tool(search_tool)
             .tool(read_tool)
             .tool(create_tool)
@@ -312,6 +327,7 @@ impl Dreamer {
 
         let user_prompt = format!(
             "Analyze this session log and update the wiki with any knowledge not already captured.\n\n\
+            Session produced by agent: {agent_id}\n\n\
             {changes_context}\n\n\
             --- SESSION LOG ---\n\
             {log_content}\n\
@@ -323,7 +339,9 @@ impl Dreamer {
             4. Use appropriate page types: Concept for ideas, Decision for choices made, Entity for specific things, Leaf for detailed reference\n\
             5. Always add links to related existing pages\n\
             6. Be concise — store the insight, not the raw conversation\n\
-            7. Report what you did at the end"
+            7. For visibility: use general (default) for team knowledge, or user for personal preferences/context\n\
+            8. Report what you did at the end",
+            agent_id = extract_agent_id(key),
         );
 
         let response = agent.prompt(&user_prompt).await?;
@@ -364,12 +382,20 @@ Principles:
   - Leaf: deep reference material
   - Index: lightweight hub linking related pages
 
+Visibility rules:
+- Use GENERAL visibility (the default) for team/project knowledge: decisions, architecture, patterns, SOPs, domain concepts, configuration procedures.
+- Use USER visibility ONLY for content that is clearly personal to the session's author: individual preferences (coding style, tool preferences), personal opinions not ratified as team decisions, or individual status/context (what someone is working on, their ramp-up progress).
+- When in doubt, default to GENERAL. Shared knowledge is more valuable than siloed knowledge.
+- To create a user-scoped page, pass visibility: "user" to wiki_create. The page will be scoped to the user who produced the session.
+
 What to extract from session logs:
-- Decisions made (and their rationale)
-- New understanding of systems or domains
-- Patterns discovered
-- Configuration or setup procedures
-- Architecture choices
+- Decisions made (and their rationale) → general
+- New understanding of systems or domains → general
+- Patterns discovered → general
+- Configuration or setup procedures → general
+- Architecture choices → general
+- Personal coding preferences or style opinions → user
+- Individual status updates or ramp-up context → user
 
 What to skip:
 - Trivial back-and-forth
@@ -377,5 +403,10 @@ What to skip:
 - Raw code without conceptual insight
 - Temporary debugging that won't matter next week
 
-After analyzing, report what you did: "Created page: X", "Updated page: Y", or "No new knowledge found."
+After analyzing, report what you did: "Created page: X (general)", "Created page: Y (user)", "Updated page: Z", or "No new knowledge found."
 "#;
+
+/// Extract the agent ID from an S3 key like "sessions/kiro-jd/2026-08-03/session-id.jsonl"
+fn extract_agent_id(key: &str) -> &str {
+    key.split('/').nth(1).unwrap_or("unknown")
+}
