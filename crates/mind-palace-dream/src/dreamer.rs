@@ -108,7 +108,9 @@ impl Dreamer {
                 model_id: config.bedrock_model.clone(),
                 region: config.region.clone(),
             })
-            .changelog(changelog.clone() as Arc<dyn mind_palace_core::ports::changelog::ChangelogStore>)
+            .changelog(
+                changelog.clone() as Arc<dyn mind_palace_core::ports::changelog::ChangelogStore>
+            )
             .build()
             .await?;
 

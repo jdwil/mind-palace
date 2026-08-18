@@ -4,12 +4,12 @@ use mind_palace_core::domain::graph::KnowledgeGraph;
 use mind_palace_core::domain::service::WikiService;
 use mind_palace_core::domain::tenant::TenantContext;
 use mind_palace_core::error::MindPalaceError;
+use mind_palace_core::ports::changelog::ChangelogStore;
 use mind_palace_core::ports::embedding::EmbeddingPort;
 use mind_palace_core::ports::graph::GraphStore;
 use mind_palace_core::ports::page_store::PageStore;
 use mind_palace_core::ports::vector_search::VectorSearchPort;
 use mind_palace_infra::bedrock_embedding::{BedrockEmbedding, BedrockEmbeddingConfig};
-use mind_palace_core::ports::changelog::ChangelogStore;
 use mind_palace_infra::dynamo_graph_store::{DynamoGraphStore, DynamoGraphStoreConfig};
 use mind_palace_infra::s3_page_store::{S3PageStore, S3PageStoreConfig};
 use mind_palace_infra::s3vectors_search::{S3VectorsSearch, S3VectorsSearchConfig};
@@ -168,13 +168,7 @@ impl MindPalaceBuilder {
         };
 
         let service = Arc::new({
-            let svc = WikiService::new(
-                page_store,
-                vector_search,
-                embedding,
-                graph_store,
-                graph,
-            );
+            let svc = WikiService::new(page_store, vector_search, embedding, graph_store, graph);
             if let Some(changelog) = self.changelog {
                 svc.with_changelog(changelog)
             } else {
