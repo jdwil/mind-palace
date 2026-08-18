@@ -56,7 +56,8 @@ if [ ! -f "$SESSION_FILE" ]; then
 fi
 
 # Check substance: count user messages
-TURN_COUNT=$(grep -c '"role":"user"\|"role": "user"' "$SESSION_FILE" 2>/dev/null || echo "0")
+# Grok uses "type":"user" (not "role":"user") in chat_history.jsonl
+TURN_COUNT=$(grep -c '"type":"user"\|"type": "user"\|"role":"user"\|"role": "user"' "$SESSION_FILE" 2>/dev/null || echo "0")
 if [ "$TURN_COUNT" -lt "$MIN_TURNS" ]; then
   exit 0
 fi

@@ -108,6 +108,7 @@ impl Dreamer {
                 model_id: config.bedrock_model.clone(),
                 region: config.region.clone(),
             })
+            .changelog(changelog.clone() as Arc<dyn mind_palace_core::ports::changelog::ChangelogStore>)
             .build()
             .await?;
 
@@ -244,10 +245,13 @@ impl Dreamer {
 
         let log_content = self.read_log(key).await?;
 
-        // Truncate very large logs to stay within context window
-        let log_content = if log_content.len() > 200_000 {
+        // Truncate very large logs to stay within context window.
+        // 600KB is ~150K tokens with Claude's tokenizer — well within the 200K context window
+        // after accounting for system prompt and tool call overhead.
+        const MAX_LOG_BYTES: usize = 600_000;
+        let log_content = if log_content.len() > MAX_LOG_BYTES {
             warn!(key = %key, size = log_content.len(), "Log too large, truncating");
-            log_content[..200_000].to_string()
+            log_content[..MAX_LOG_BYTES].to_string()
         } else {
             log_content
         };
@@ -344,7 +348,19 @@ impl Dreamer {
             agent_id = extract_agent_id(key),
         );
 
-        let response = agent.prompt(&user_prompt).await?;
+        let response = match agent.prompt(&user_prompt).await {
+            Ok(r) => r,
+            Err(e) => {
+                let err_str = e.to_string();
+                // Handle the case where the LLM returns empty content (e.g., truncated log
+                // produced nothing useful). Treat as "no knowledge found" rather than a hard error.
+                if err_str.contains("empty vector") || err_str.contains("empty") {
+                    warn!(key = %key, "LLM returned empty response, no knowledge to extract");
+                    return Ok((0, 0));
+                }
+                return Err(Box::new(e) as Box<dyn std::error::Error>);
+            }
+        };
         debug!(response = %response, "Agent response");
 
         // Parse response for stats (rough heuristic)

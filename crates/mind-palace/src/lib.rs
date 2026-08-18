@@ -9,6 +9,7 @@ use mind_palace_core::ports::graph::GraphStore;
 use mind_palace_core::ports::page_store::PageStore;
 use mind_palace_core::ports::vector_search::VectorSearchPort;
 use mind_palace_infra::bedrock_embedding::{BedrockEmbedding, BedrockEmbeddingConfig};
+use mind_palace_core::ports::changelog::ChangelogStore;
 use mind_palace_infra::dynamo_graph_store::{DynamoGraphStore, DynamoGraphStoreConfig};
 use mind_palace_infra::s3_page_store::{S3PageStore, S3PageStoreConfig};
 use mind_palace_infra::s3vectors_search::{S3VectorsSearch, S3VectorsSearchConfig};
@@ -50,6 +51,7 @@ pub struct MindPalaceBuilder {
     s3vectors: Option<S3VectorsConfig>,
     bedrock: Option<BedrockConfig>,
     tenancy_enabled: bool,
+    changelog: Option<Arc<dyn ChangelogStore>>,
 }
 
 impl MindPalaceBuilder {
@@ -60,6 +62,7 @@ impl MindPalaceBuilder {
             s3vectors: None,
             bedrock: None,
             tenancy_enabled: false,
+            changelog: None,
         }
     }
 
@@ -85,6 +88,11 @@ impl MindPalaceBuilder {
 
     pub fn enable_tenancy(mut self, enabled: bool) -> Self {
         self.tenancy_enabled = enabled;
+        self
+    }
+
+    pub fn changelog(mut self, store: Arc<dyn ChangelogStore>) -> Self {
+        self.changelog = Some(store);
         self
     }
 
@@ -159,13 +167,20 @@ impl MindPalaceBuilder {
             Arc::new(RwLock::new(KnowledgeGraph::from_data(data)))
         };
 
-        let service = Arc::new(WikiService::new(
-            page_store,
-            vector_search,
-            embedding,
-            graph_store,
-            graph,
-        ));
+        let service = Arc::new({
+            let svc = WikiService::new(
+                page_store,
+                vector_search,
+                embedding,
+                graph_store,
+                graph,
+            );
+            if let Some(changelog) = self.changelog {
+                svc.with_changelog(changelog)
+            } else {
+                svc
+            }
+        });
 
         let ctx = TenantContext::global();
         let tools = MindPalaceTools {
