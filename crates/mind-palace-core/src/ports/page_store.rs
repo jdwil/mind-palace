@@ -22,6 +22,11 @@ pub trait PageStore: Send + Sync {
         ctx: &TenantContext,
     ) -> Result<Page, MindPalaceError>;
 
+    /// Read a page by slug without visibility filtering.
+    /// Used for operations that need to access pages regardless of visibility state
+    /// (e.g., unarchiving an archived page).
+    async fn get_page_by_slug_unfiltered(&self, slug: &Slug) -> Result<Page, MindPalaceError>;
+
     async fn save_page(&self, page: &Page) -> Result<(), MindPalaceError>;
 
     async fn delete_page(&self, id: &PageId) -> Result<(), MindPalaceError>;

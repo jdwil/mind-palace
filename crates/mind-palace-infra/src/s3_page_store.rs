@@ -33,6 +33,7 @@ impl S3PageStore {
             Visibility::General => "general".to_string(),
             Visibility::Tenant(tid) => tid.0.clone(),
             Visibility::User(uid) => format!("user-{uid}"),
+            Visibility::Archived => "archived".to_string(),
         };
         format!(
             "{}/{}/pages/{}.md",
@@ -200,6 +201,82 @@ impl PageStore for S3PageStore {
                     return deserialize_page(&raw);
                 }
                 Err(_) => continue,
+            }
+        }
+        Err(MindPalaceError::PageNotFound(slug.as_str().to_string()))
+    }
+
+    async fn get_page_by_slug_unfiltered(&self, slug: &Slug) -> Result<Page, MindPalaceError> {
+        // Try all known prefixes including archived (bypasses visibility filtering)
+        let all_prefixes = vec![
+            format!("{}/general/pages/", self.config.prefix),
+            format!("{}/archived/pages/", self.config.prefix),
+        ];
+        for prefix in all_prefixes {
+            let key = format!("{}{}.md", prefix, slug.as_str());
+            let result = self
+                .client
+                .get_object()
+                .bucket(&self.config.bucket_name)
+                .key(&key)
+                .send()
+                .await;
+            match result {
+                Ok(output) => {
+                    let bytes = output
+                        .body
+                        .collect()
+                        .await
+                        .map_err(|e| MindPalaceError::Store(e.to_string()))?;
+                    let raw = String::from_utf8(bytes.to_vec())
+                        .map_err(|e| MindPalaceError::Store(e.to_string()))?;
+                    return deserialize_page(&raw);
+                }
+                Err(_) => continue,
+            }
+        }
+        // Also try scanning by prefix in case it's under a tenant segment
+        let prefix = &self.config.prefix;
+        let mut continuation_token: Option<String> = None;
+        loop {
+            let mut req = self
+                .client
+                .list_objects_v2()
+                .bucket(&self.config.bucket_name)
+                .prefix(prefix);
+            if let Some(token) = &continuation_token {
+                req = req.continuation_token(token);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| MindPalaceError::Store(e.to_string()))?;
+            for obj in resp.contents() {
+                let key = obj.key().unwrap_or_default();
+                if key.ends_with(&format!("/{}.md", slug.as_str())) {
+                    let get_result = self
+                        .client
+                        .get_object()
+                        .bucket(&self.config.bucket_name)
+                        .key(key)
+                        .send()
+                        .await;
+                    if let Ok(output) = get_result {
+                        let bytes = output
+                            .body
+                            .collect()
+                            .await
+                            .map_err(|e| MindPalaceError::Store(e.to_string()))?;
+                        let raw = String::from_utf8(bytes.to_vec())
+                            .map_err(|e| MindPalaceError::Store(e.to_string()))?;
+                        return deserialize_page(&raw);
+                    }
+                }
+            }
+            if resp.is_truncated() == Some(true) {
+                continuation_token = resp.next_continuation_token().map(|s| s.to_string());
+            } else {
+                break;
             }
         }
         Err(MindPalaceError::PageNotFound(slug.as_str().to_string()))

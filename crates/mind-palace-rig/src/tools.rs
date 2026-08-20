@@ -466,3 +466,91 @@ fn page_response_to_value(resp: &PageResponse) -> Value {
         }),
     }
 }
+
+// --- WikiArchiveTool ---
+
+pub struct WikiArchiveTool {
+    pub service: Arc<WikiService>,
+    pub ctx: TenantContext,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WikiArchiveArgs {
+    /// Page slug to archive
+    pub slug: String,
+}
+
+#[derive(Serialize)]
+pub struct WikiArchiveOutput {
+    pub slug: String,
+    pub archived: bool,
+}
+
+impl Tool for WikiArchiveTool {
+    const NAME: &'static str = "wiki_archive";
+    type Error = MindPalaceToolError;
+    type Args = WikiArchiveArgs;
+    type Output = WikiArchiveOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Archive a wiki page (soft delete). Removes from search/list/traverse but can be unarchived later.".to_string(),
+            parameters: serde_json::to_value(schemars::schema_for!(WikiArchiveArgs)).unwrap(),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let slug = Slug::new(&args.slug).map_err(|e| MindPalaceToolError(e.to_string()))?;
+        self.service.archive_page(&slug, &self.ctx).await?;
+        Ok(WikiArchiveOutput {
+            slug: args.slug,
+            archived: true,
+        })
+    }
+}
+
+// --- WikiUnarchiveTool ---
+
+pub struct WikiUnarchiveTool {
+    pub service: Arc<WikiService>,
+    pub ctx: TenantContext,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WikiUnarchiveArgs {
+    /// Page slug to unarchive
+    pub slug: String,
+}
+
+#[derive(Serialize)]
+pub struct WikiUnarchiveOutput {
+    pub slug: String,
+    pub unarchived: bool,
+}
+
+impl Tool for WikiUnarchiveTool {
+    const NAME: &'static str = "wiki_unarchive";
+    type Error = MindPalaceToolError;
+    type Args = WikiUnarchiveArgs;
+    type Output = WikiUnarchiveOutput;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description:
+                "Unarchive a previously archived wiki page, restoring it to General visibility."
+                    .to_string(),
+            parameters: serde_json::to_value(schemars::schema_for!(WikiUnarchiveArgs)).unwrap(),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let slug = Slug::new(&args.slug).map_err(|e| MindPalaceToolError(e.to_string()))?;
+        self.service.unarchive_page(&slug).await?;
+        Ok(WikiUnarchiveOutput {
+            slug: args.slug,
+            unarchived: true,
+        })
+    }
+}

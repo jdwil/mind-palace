@@ -51,6 +51,15 @@ impl PageStore for MockPageStore {
             .ok_or_else(|| MindPalaceError::PageNotFound(slug.as_str().into()))
     }
 
+    async fn get_page_by_slug_unfiltered(&self, slug: &Slug) -> Result<Page, MindPalaceError> {
+        let pages = self.pages.lock().unwrap();
+        pages
+            .iter()
+            .find(|p| &p.slug == slug)
+            .cloned()
+            .ok_or_else(|| MindPalaceError::PageNotFound(slug.as_str().into()))
+    }
+
     async fn save_page(&self, page: &Page) -> Result<(), MindPalaceError> {
         let mut pages = self.pages.lock().unwrap();
         pages.retain(|p| p.id != page.id);

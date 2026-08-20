@@ -87,6 +87,12 @@ pub struct ListParams {
     pub limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ArchiveParams {
+    #[schemars(description = "Page slug to archive or unarchive")]
+    pub slug: String,
+}
+
 // --- Tool router ---
 
 #[tool_router]
@@ -310,6 +316,44 @@ impl MindPalaceMcpServer {
             })
             .collect();
 
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Archive a wiki page (soft delete). Removes from search/list/traverse but can be unarchived later."
+    )]
+    async fn wiki_archive(
+        &self,
+        Parameters(params): Parameters<ArchiveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let slug =
+            Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        self.service
+            .archive_page(&slug, &self.ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = serde_json::json!({ "slug": params.slug, "archived": true });
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Unarchive a previously archived wiki page, restoring it to General visibility."
+    )]
+    async fn wiki_unarchive(
+        &self,
+        Parameters(params): Parameters<ArchiveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let slug =
+            Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        self.service
+            .unarchive_page(&slug)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = serde_json::json!({ "slug": params.slug, "unarchived": true });
         let content =
             Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![content]))

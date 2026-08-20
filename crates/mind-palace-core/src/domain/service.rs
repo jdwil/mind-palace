@@ -347,6 +347,111 @@ impl WikiService {
         Ok(())
     }
 
+    pub async fn archive_page(
+        &self,
+        slug: &Slug,
+        ctx: &TenantContext,
+    ) -> Result<(), MindPalaceError> {
+        let mut page = self.page_store.get_page_by_slug(slug, ctx).await?;
+        page.visibility = Visibility::Archived;
+        page.version += 1;
+        page.updated_at = chrono::Utc::now();
+        self.page_store.save_page(&page).await?;
+
+        // Remove from vector search (won't appear in semantic search)
+        self.vector_search.delete_embedding(&page.id).await?;
+
+        // Update graph node visibility so it's filtered from traversal/list
+        let node_data = crate::ports::graph::GraphNodeData {
+            page_id: page.id.clone(),
+            slug: page.slug.clone(),
+            title: page.title.clone(),
+            summary: page.summary.clone(),
+            visibility: Visibility::Archived,
+            page_type: page.page_type.clone(),
+        };
+        self.graph_store.save_node(&node_data).await?;
+
+        // Update in-memory graph
+        {
+            let mut g = self.graph.write().await;
+            if let Some(node) = g.get_node_mut(&page.id) {
+                node.visibility = Visibility::Archived;
+            }
+        }
+
+        if let Some(ref changelog) = self.changelog {
+            let entry = ChangelogEntry {
+                timestamp: chrono::Utc::now(),
+                slug: page.slug.clone(),
+                page_id: page.id.clone(),
+                action: ChangeAction::Updated,
+                agent_id: None,
+                summary: Some("Archived".to_string()),
+            };
+            changelog.append(&entry).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn unarchive_page(&self, slug: &Slug) -> Result<(), MindPalaceError> {
+        // Must bypass normal visibility check since archived pages are hidden
+        // by can_see. Use get_page_by_slug_unfiltered which reads without
+        // visibility filtering.
+        let mut page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
+        page.visibility = Visibility::General;
+        page.version += 1;
+        page.updated_at = chrono::Utc::now();
+        self.page_store.save_page(&page).await?;
+
+        // Re-index in vector search
+        let text = page.full_content();
+        let embedding = self.embedding.embed_text(&text).await?;
+        let meta = EmbeddingMetadata {
+            page_id: page.id.clone(),
+            slug: page.slug.clone(),
+            title: page.title.clone(),
+            visibility: page.visibility.clone(),
+        };
+        self.vector_search
+            .upsert_embedding(&meta, &embedding)
+            .await?;
+
+        // Update graph node
+        let node_data = crate::ports::graph::GraphNodeData {
+            page_id: page.id.clone(),
+            slug: page.slug.clone(),
+            title: page.title.clone(),
+            summary: page.summary.clone(),
+            visibility: Visibility::General,
+            page_type: page.page_type.clone(),
+        };
+        self.graph_store.save_node(&node_data).await?;
+
+        // Update in-memory graph
+        {
+            let mut g = self.graph.write().await;
+            if let Some(node) = g.get_node_mut(&page.id) {
+                node.visibility = Visibility::General;
+            }
+        }
+
+        if let Some(ref changelog) = self.changelog {
+            let entry = ChangelogEntry {
+                timestamp: chrono::Utc::now(),
+                slug: page.slug.clone(),
+                page_id: page.id.clone(),
+                action: ChangeAction::Updated,
+                agent_id: None,
+                summary: Some("Unarchived".to_string()),
+            };
+            changelog.append(&entry).await?;
+        }
+
+        Ok(())
+    }
+
     fn find_page_id_by_slug(
         &self,
         graph: &KnowledgeGraph,
@@ -399,6 +504,15 @@ mod tests {
             slug: &Slug,
             _ctx: &TenantContext,
         ) -> Result<Page, MindPalaceError> {
+            let pages = self.pages.lock().unwrap();
+            pages
+                .iter()
+                .find(|p| &p.slug == slug)
+                .cloned()
+                .ok_or_else(|| MindPalaceError::PageNotFound(slug.as_str().into()))
+        }
+
+        async fn get_page_by_slug_unfiltered(&self, slug: &Slug) -> Result<Page, MindPalaceError> {
             let pages = self.pages.lock().unwrap();
             pages
                 .iter()

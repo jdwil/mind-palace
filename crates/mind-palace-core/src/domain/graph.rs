@@ -108,6 +108,10 @@ impl KnowledgeGraph {
         self.index_map.get(page_id).map(|&idx| &self.graph[idx])
     }
 
+    pub fn get_node_mut(&mut self, page_id: &PageId) -> Option<&mut GraphNode> {
+        self.index_map.get(page_id).map(|&idx| &mut self.graph[idx])
+    }
+
     pub fn get_neighbors(
         &self,
         page_id: &PageId,

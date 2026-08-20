@@ -158,6 +158,7 @@ impl VectorSearchPort for S3VectorsSearch {
             Visibility::General => "general".to_string(),
             Visibility::Tenant(tid) => tid.0.clone(),
             Visibility::User(uid) => format!("user-{uid}"),
+            Visibility::Archived => "archived".to_string(),
         };
 
         let meta_json = serde_json::json!({

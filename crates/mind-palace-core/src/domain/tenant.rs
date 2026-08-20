@@ -63,12 +63,15 @@ impl TenantContext {
     /// Check if this context can see a page with the given visibility.
     ///
     /// Rules:
+    /// - `Visibility::Archived` → NEVER visible through normal operations
     /// - `Visibility::General` → visible to ALL contexts
     /// - `Visibility::Tenant(tid)` → visible to that tenant + parent tenants + global
     /// - `Visibility::User(uid)` → visible to that user + global (global sees everything)
     pub fn can_see(&self, visibility: &Visibility) -> bool {
         match (&self.tenant_id, visibility) {
-            // Global context sees everything
+            // Archived pages are never visible through normal operations
+            (_, Visibility::Archived) => false,
+            // Global context sees everything (except archived)
             (None, _) => true,
             // General pages are visible to everyone
             (_, Visibility::General) => true,
