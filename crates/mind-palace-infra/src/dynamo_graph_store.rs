@@ -60,7 +60,7 @@ impl GraphStore for DynamoGraphStore {
             let resp = req
                 .send()
                 .await
-                .map_err(|e| MindPalaceError::Graph(e.to_string()))?;
+                .map_err(|e| MindPalaceError::Graph(format!("{e}")))?;
 
             for item in resp.items() {
                 let sk = get_s(item, "SK")?;

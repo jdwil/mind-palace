@@ -63,7 +63,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let graph = {
-        let data = graph_store.load_graph().await.unwrap_or_default();
+        let data = match graph_store.load_graph().await {
+            Ok(d) => {
+                eprintln!("Mind Palace MCP: loaded graph with {} nodes, {} edges", d.nodes.len(), d.edges.len());
+                d
+            }
+            Err(e) => {
+                eprintln!("Mind Palace MCP: FAILED to load graph: {:?}", e);
+                Default::default()
+            }
+        };
         Arc::new(RwLock::new(KnowledgeGraph::from_data(data)))
     };
 
