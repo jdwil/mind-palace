@@ -65,7 +65,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let graph = {
         let data = match graph_store.load_graph().await {
             Ok(d) => {
-                eprintln!("Mind Palace MCP: loaded graph with {} nodes, {} edges", d.nodes.len(), d.edges.len());
+                eprintln!(
+                    "Mind Palace MCP: loaded graph with {} nodes, {} edges",
+                    d.nodes.len(),
+                    d.edges.len()
+                );
                 d
             }
             Err(e) => {
