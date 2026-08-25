@@ -38,36 +38,32 @@ The MCP server needs these environment variables. Configure them in your AI tool
 
 | Variable | Value |
 |----------|-------|
-| `MIND_PALACE_S3_BUCKET` | `mind-palace-pages-dev-086261225885` |
-| `MIND_PALACE_DYNAMO_TABLE` | `mind-palace-graph-dev` |
-| `MIND_PALACE_VECTORS_BUCKET` | `mind-palace-vectors-dev-086261225885` |
+| `MIND_PALACE_S3_BUCKET` | Your pages S3 bucket |
+| `MIND_PALACE_DYNAMO_TABLE` | Your DynamoDB graph table |
+| `MIND_PALACE_VECTORS_BUCKET` | Your S3 Vectors bucket |
 | `MIND_PALACE_VECTORS_INDEX` | `wiki-pages` |
 | `MIND_PALACE_BEDROCK_MODEL` | `amazon.titan-embed-text-v2:0` |
-| `MIND_PALACE_REGION` | `us-west-2` |
+| `MIND_PALACE_REGION` | Your AWS region (e.g., `us-west-2`) |
 | `MIND_PALACE_S3_PREFIX` | `v1` |
-| `AWS_PROFILE` | `dashlx_dev` |
+| `AWS_PROFILE` | Your AWS CLI profile name |
 
 ### Recommended
 
 | Variable | Value |
 |----------|-------|
-| `MIND_PALACE_USER_ID` | Your email (e.g., `jane@dashlx.com`) |
+| `MIND_PALACE_USER_ID` | Your email (e.g., `jane@example.com`) |
 | `MIND_PALACE_USER_NAME` | Your display name (e.g., `Jane Smith`) |
 
 ### AWS Credentials
 
-You must have the `dashlx_dev` AWS profile configured with SSO:
+You must have an AWS profile configured with access to the Mind Palace resources:
 
 ```bash
-# One-time: configure the profile (if not already done)
-aws configure sso --profile dashlx_dev
-# Start URL: https://d-9267b63690.awsapps.com/start/
-# Region: us-west-2
-# Account: 086261225885
-# Role: AWSAdministratorAccess
+# One-time: configure your profile with SSO (get details from your team lead)
+aws configure sso --profile YOUR_PROFILE
 
 # Login (do this when credentials expire)
-aws sso login --profile dashlx_dev
+aws sso login --profile YOUR_PROFILE
 ```
 
 ## Tool-Specific Configuration
@@ -80,16 +76,16 @@ aws sso login --profile dashlx_dev
     "mind-palace": {
       "command": "/usr/local/bin/mind-palace-mcp",
       "env": {
-        "MIND_PALACE_S3_BUCKET": "mind-palace-pages-dev-086261225885",
+        "MIND_PALACE_S3_BUCKET": "YOUR_PAGES_BUCKET",
         "MIND_PALACE_S3_PREFIX": "v1",
-        "MIND_PALACE_DYNAMO_TABLE": "mind-palace-graph-dev",
-        "MIND_PALACE_VECTORS_BUCKET": "mind-palace-vectors-dev-086261225885",
+        "MIND_PALACE_DYNAMO_TABLE": "YOUR_DYNAMO_TABLE",
+        "MIND_PALACE_VECTORS_BUCKET": "YOUR_VECTORS_BUCKET",
         "MIND_PALACE_VECTORS_INDEX": "wiki-pages",
         "MIND_PALACE_BEDROCK_MODEL": "amazon.titan-embed-text-v2:0",
         "MIND_PALACE_REGION": "us-west-2",
-        "MIND_PALACE_USER_ID": "YOUR_EMAIL@dashlx.com",
+        "MIND_PALACE_USER_ID": "you@example.com",
         "MIND_PALACE_USER_NAME": "Your Name",
-        "AWS_PROFILE": "dashlx_dev"
+        "AWS_PROFILE": "your-profile"
       }
     }
   }
@@ -104,16 +100,16 @@ command = "/usr/local/bin/mind-palace-mcp"
 enabled = true
 
 [mcp_servers.mind-palace.env]
-MIND_PALACE_S3_BUCKET = "mind-palace-pages-dev-086261225885"
+MIND_PALACE_S3_BUCKET = "YOUR_PAGES_BUCKET"
 MIND_PALACE_S3_PREFIX = "v1"
-MIND_PALACE_DYNAMO_TABLE = "mind-palace-graph-dev"
-MIND_PALACE_VECTORS_BUCKET = "mind-palace-vectors-dev-086261225885"
+MIND_PALACE_DYNAMO_TABLE = "YOUR_DYNAMO_TABLE"
+MIND_PALACE_VECTORS_BUCKET = "YOUR_VECTORS_BUCKET"
 MIND_PALACE_VECTORS_INDEX = "wiki-pages"
 MIND_PALACE_BEDROCK_MODEL = "amazon.titan-embed-text-v2:0"
 MIND_PALACE_REGION = "us-west-2"
-MIND_PALACE_USER_ID = "YOUR_EMAIL@dashlx.com"
+MIND_PALACE_USER_ID = "you@example.com"
 MIND_PALACE_USER_NAME = "Your Name"
-AWS_PROFILE = "dashlx_dev"
+AWS_PROFILE = "your-profile"
 ```
 
 ### Claude Desktop (`claude_desktop_config.json`)
@@ -124,16 +120,16 @@ AWS_PROFILE = "dashlx_dev"
     "mind-palace": {
       "command": "/usr/local/bin/mind-palace-mcp",
       "env": {
-        "MIND_PALACE_S3_BUCKET": "mind-palace-pages-dev-086261225885",
+        "MIND_PALACE_S3_BUCKET": "YOUR_PAGES_BUCKET",
         "MIND_PALACE_S3_PREFIX": "v1",
-        "MIND_PALACE_DYNAMO_TABLE": "mind-palace-graph-dev",
-        "MIND_PALACE_VECTORS_BUCKET": "mind-palace-vectors-dev-086261225885",
+        "MIND_PALACE_DYNAMO_TABLE": "YOUR_DYNAMO_TABLE",
+        "MIND_PALACE_VECTORS_BUCKET": "YOUR_VECTORS_BUCKET",
         "MIND_PALACE_VECTORS_INDEX": "wiki-pages",
         "MIND_PALACE_BEDROCK_MODEL": "amazon.titan-embed-text-v2:0",
         "MIND_PALACE_REGION": "us-west-2",
-        "MIND_PALACE_USER_ID": "YOUR_EMAIL@dashlx.com",
+        "MIND_PALACE_USER_ID": "you@example.com",
         "MIND_PALACE_USER_NAME": "Your Name",
-        "AWS_PROFILE": "dashlx_dev"
+        "AWS_PROFILE": "your-profile"
       }
     }
   }
@@ -146,7 +142,7 @@ After configuring, restart your AI tool and ask it to run `wiki_search` with any
 
 ## Troubleshooting
 
-- **"dispatch failure" or empty results**: Run `aws sso login --profile dashlx_dev` to refresh credentials
+- **"dispatch failure" or empty results**: Run `aws sso login --profile YOUR_PROFILE` to refresh credentials
 - **"page not found"**: Check that `MIND_PALACE_REGION` is `us-west-2`
 - **macOS "cannot be opened"**: Run `xattr -d com.apple.quarantine /usr/local/bin/mind-palace-mcp`
 - **Windows Defender blocks it**: Allow the executable in Windows Security settings
