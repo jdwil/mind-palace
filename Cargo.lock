@@ -2213,6 +2213,7 @@ dependencies = [
  "aws-sdk-dynamodb",
  "aws-sdk-s3",
  "aws-sdk-s3vectors",
+ "chrono",
  "mind-palace-core",
  "mind-palace-infra",
  "rmcp",

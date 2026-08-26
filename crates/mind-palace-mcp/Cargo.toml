@@ -24,3 +24,4 @@ aws-sdk-s3.workspace = true
 aws-sdk-dynamodb.workspace = true
 aws-sdk-s3vectors.workspace = true
 aws-sdk-bedrockruntime.workspace = true
+chrono.workspace = true

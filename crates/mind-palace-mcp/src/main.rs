@@ -22,6 +22,10 @@ fn env_or(key: &str, default: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Fix SSO cache timestamps that have timezone offsets (e.g., "-04:00")
+    // which the Rust AWS SDK cannot parse. Convert them to UTC "Z" format.
+    fix_sso_cache_timestamps();
+
     let region = env_or("MIND_PALACE_REGION", "us-east-1");
     let s3_bucket = env_or("MIND_PALACE_S3_BUCKET", "mind-palace-pages");
     let s3_prefix = env_or("MIND_PALACE_S3_PREFIX", "v1");
@@ -109,4 +113,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     service.waiting().await?;
     Ok(())
+}
+
+/// Fix AWS SSO cache tokens that have timezone offsets in `expiresAt`.
+///
+/// The Rust AWS SDK (Smithy) only accepts UTC timestamps ending in "Z".
+/// Some AWS CLI versions write local offsets like "2026-08-26T11:54:38-04:00".
+/// This function normalizes them in-place before the SDK tries to read them.
+fn fix_sso_cache_timestamps() {
+    let home = match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let cache_dir = std::path::Path::new(&home).join(".aws/sso/cache");
+    let entries = match std::fs::read_dir(&cache_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // Quick check: does it have expiresAt with an offset?
+        if !content.contains("expiresAt") {
+            continue;
+        }
+        // Look for a pattern like "2026-08-26T11:54:38-04:00" or "+05:30"
+        // UTC timestamps end with Z and don't need fixing
+        let mut json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let expires = match json.get("expiresAt").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if expires.ends_with('Z') {
+            continue;
+        }
+        // Parse and convert to UTC
+        let fixed = match chrono::DateTime::parse_from_rfc3339(&expires) {
+            Ok(dt) => dt
+                .with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string(),
+            Err(_) => continue,
+        };
+        json["expiresAt"] = serde_json::Value::String(fixed);
+        if let Ok(output) = serde_json::to_string_pretty(&json) {
+            let _ = std::fs::write(&path, output);
+        }
+    }
 }
