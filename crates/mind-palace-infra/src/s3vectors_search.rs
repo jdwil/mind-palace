@@ -84,7 +84,8 @@ impl VectorSearchPort for S3VectorsSearch {
             .index_name(&self.config.index_name)
             .top_k(limit as i32)
             .query_vector(VectorData::Float32(float32_vec))
-            .return_metadata(true);
+            .return_metadata(true)
+            .return_distance(true);
 
         // Build filter for tenant visibility
         if ctx.tenant_id.is_some() {
