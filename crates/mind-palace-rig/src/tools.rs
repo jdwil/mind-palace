@@ -95,7 +95,9 @@ pub struct WikiReadTool {
 pub struct WikiReadArgs {
     /// Page slug
     pub slug: String,
-    /// Read level: "summary", "section", or "full"
+    /// Detail level (default: "summary"). "summary" = title + one-line summary only
+    /// (cheapest, NOT the full page). "section" = one named section (requires `section`).
+    /// "full" = the ENTIRE page with all section bodies and links. Use "full" for complete content.
     pub level: Option<String>,
     /// Section heading (required if level=section)
     pub section: Option<String>,
@@ -115,7 +117,9 @@ impl Tool for WikiReadTool {
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
             name: Self::NAME.to_string(),
-            description: "Read a wiki page at a given detail level (summary, section, or full)"
+            description: "Read a wiki page. Defaults to 'summary' level (title + one-line \
+                summary only). Pass level='full' to get the complete page with all section \
+                content and links. Levels: summary (cheapest), section (one section), full (everything)."
                 .to_string(),
             parameters: serde_json::to_value(schemars::schema_for!(WikiReadArgs)).unwrap(),
         }

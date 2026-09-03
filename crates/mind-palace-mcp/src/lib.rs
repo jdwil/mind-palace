@@ -12,6 +12,101 @@ use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
+/// The Mind Palace operating manual, returned by the `wiki_instructions` tool.
+/// Shipped in the binary so instructions version with the code — installers only
+/// need a one-line prompt ("call wiki_instructions before doing any work").
+const WIKI_INSTRUCTIONS: &str = r#"# Knowledge Base (Mind Palace)
+
+You have access to a persistent wiki-style knowledge base that stores synthesized knowledge across all interactions. This is your long-term memory. Use it constantly — it compounds over time and makes you more effective with every interaction.
+
+## Core Behavior
+
+1. **Search before answering.** Before responding to any knowledge-dependent question or starting a task, call `wiki_search` with relevant keywords. If results exist, read them before forming your answer. Do NOT rely solely on your training data when the wiki might have more current, project-specific, or user-specific information.
+
+2. **Read progressively.** Start with summaries (cheap). The `wiki_read` tool defaults to the `summary` level (title + one-line summary only). When you need the actual page content, call `wiki_read` with `level="full"` to get every section body and links. Use `level="section"` for a single named section. Use `wiki_traverse` to explore connected pages when you need broader context.
+
+3. **Write after learning.** After any interaction where you gained new information, resolved ambiguity, made a decision, or completed a non-trivial task:
+   - Search for existing pages on the topic first
+   - If a page exists, UPDATE it (`wiki_update`) — do not create duplicates
+   - If no page exists, CREATE one (`wiki_create`)
+   - Synthesize — store the insight, not the raw conversation
+
+4. **Link everything.** Always add relevant slugs to the `links` field when creating or updating. This builds the graph that makes traversal useful.
+
+5. **Archive, don't delete.** When a page is obsolete (e.g., a completed spec), call `wiki_archive` to hide it from search/list/traverse. It can be restored with `wiki_unarchive`. Only humans hard-delete via the web UI.
+
+## Page Types
+
+| Type | Use For | Example |
+|------|---------|---------|
+| `Index` | Lightweight hub linking to related pages | "deployment-index" linking to all deploy-related pages |
+| `Concept` | Mid-level synthesis of a topic | "rust-error-handling", "multi-tenancy-design" |
+| `Entity` | Specific thing: person, project, service | "dashlx-ecs-cluster", "client-acme-corp" |
+| `Decision` | Record of a decision + rationale | "decision-use-s3-vectors-over-pinecone" |
+| `Leaf` | Deep reference material | "aws-sdk-dynamodb-single-table-patterns" |
+| `Sop` | Step-by-step procedure any agent can follow | "sop-deploy-to-production" |
+| `Skill` | Claude-optimized prompt pattern/technique | "skill-progressive-disclosure-prompting" |
+
+## Page Structure Rules
+
+- **Summary** (required): 1-2 sentences. This is what search results show. Make it count.
+- **Sections** (at least one required): Use clear headings. Content is Markdown.
+- **Slug**: lowercase, hyphens only. Descriptive: `rust-ownership-patterns` not `page-47`.
+- **Links**: slugs of related pages. Builds the knowledge graph.
+- **Visibility**: `general` (default) or `user` (personal). See below.
+
+## Visibility — General vs User-Scoped Pages
+
+Most pages should be **general** (visible to all users). Use general for:
+- Technical decisions, architecture, patterns
+- Project knowledge, domain concepts, SOPs
+- Anything the team should share
+
+Use **user-scoped** (`visibility: "user"`) only for:
+- Personal preferences (coding style, tool preferences, workflow habits)
+- Individual context (what this person is working on, their ramp-up status)
+- Opinions that are explicitly personal and should not be applied to others
+
+**When in doubt, default to general.** Knowledge is more valuable when shared. Only scope to user when the content is genuinely personal and would be noise or misleading for other team members.
+
+Examples:
+- "We use Result<T, Error> everywhere" -> general (team decision)
+- "JD prefers verbose variable names over abbreviations" -> user
+- "The data pipeline architecture uses X" -> general
+- "Sarah is currently ramping up on the auth module" -> user (Sarah's)
+
+## SOP Pages (required sections)
+
+| Section | Purpose |
+|---------|---------|
+| Prerequisites | What must be true before starting |
+| Steps | Numbered actions to perform |
+| Constraints | MUST/SHOULD/MAY rules |
+| Verification | How to confirm success |
+
+## Skill Pages (required sections)
+
+| Section | Purpose |
+|---------|---------|
+| When to Use | Conditions that trigger this skill |
+| Prompt Pattern | The actual technique |
+| Example | Concrete demonstration |
+| Limitations | When it doesn't work |
+
+## What NOT to Write
+
+- Trivial one-off facts that won't matter in future interactions
+- Information already well-captured in an existing page (update that page instead)
+- Raw conversation logs (synthesize first, then store the synthesis)
+- Speculative content without basis — only store what you know or have decided
+
+## Maintenance Habits
+
+- When you notice outdated information while reading a page, update it immediately
+- When lint issues are returned after create/update, fix them before moving on
+- Prefer fewer, richer, well-linked pages over many shallow disconnected ones
+"#;
+
 #[derive(Clone)]
 pub struct MindPalaceMcpServer {
     service: Arc<WikiService>,
@@ -34,7 +129,9 @@ pub struct SearchParams {
 pub struct ReadParams {
     #[schemars(description = "Page slug")]
     pub slug: String,
-    #[schemars(description = "Read level: summary, section, or full")]
+    #[schemars(
+        description = "Detail level (default: 'summary'). 'summary' = title + one-line summary only (cheapest, NOT the full page). 'section' = one named section (requires 'section'). 'full' = the ENTIRE page with all section bodies and links. Use 'full' when you need the complete content."
+    )]
     pub level: Option<String>,
     #[schemars(description = "Section heading (required if level=section)")]
     pub section: Option<String>,
@@ -105,6 +202,15 @@ impl MindPalaceMcpServer {
         }
     }
 
+    #[tool(
+        description = "Read this FIRST, before using any other wiki tool. Returns the operating manual for the Mind Palace knowledge base: when to search, when to write, page types, structure rules, and visibility. Call this at the start of your work."
+    )]
+    async fn wiki_instructions(&self) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![Content::text(
+            WIKI_INSTRUCTIONS,
+        )]))
+    }
+
     #[tool(description = "Semantic search across wiki pages, returns ranked summaries")]
     async fn wiki_search(
         &self,
@@ -134,7 +240,9 @@ impl MindPalaceMcpServer {
         Ok(CallToolResult::success(vec![content]))
     }
 
-    #[tool(description = "Read a wiki page at a given detail level (summary, section, or full)")]
+    #[tool(
+        description = "Read a wiki page. Defaults to 'summary' level (title + one-line summary only). Pass level='full' to get the complete page with all section content and links. Levels: summary (cheapest), section (one section), full (everything)."
+    )]
     async fn wiki_read(
         &self,
         Parameters(params): Parameters<ReadParams>,
