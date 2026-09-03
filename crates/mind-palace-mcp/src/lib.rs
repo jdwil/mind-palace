@@ -12,6 +12,12 @@ use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
+/// Returned in the MCP `initialize` response `instructions` field. Clients that
+/// surface server instructions to the model will show this automatically at
+/// connection time — no base-prompt configuration needed by the operator.
+/// Kept short: it points at the `wiki_instructions` tool, which holds the full manual.
+const SERVER_INSTRUCTIONS: &str = "This server provides Mind Palace, a persistent wiki-style knowledge base that is your long-term memory across all sessions.\n\nYou MUST call the `wiki_instructions` tool before using any other wiki tool. It returns the operating manual (when to search, when to write, page types, structure, visibility). Follow it for the rest of the session.\n\nAt minimum: search the wiki before answering knowledge-dependent questions, and write synthesized knowledge back after you learn something or complete a non-trivial task.";
+
 /// The Mind Palace operating manual, returned by the `wiki_instructions` tool.
 /// Shipped in the binary so instructions version with the code — installers only
 /// need a one-line prompt ("call wiki_instructions before doing any work").
@@ -473,7 +479,9 @@ impl MindPalaceMcpServer {
 #[tool_handler]
 impl ServerHandler for MindPalaceMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        info.instructions = Some(SERVER_INSTRUCTIONS.to_string());
+        info
     }
 }
 
