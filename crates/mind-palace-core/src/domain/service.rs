@@ -219,6 +219,24 @@ impl WikiService {
         };
         self.graph_store.save_node(&node_data).await?;
 
+        // Rebuild graph edges from the (possibly updated) links.
+        // update_page previously set page.links but never persisted edges,
+        // leaving the graph disconnected after link changes.
+        {
+            let mut g = self.graph.write().await;
+            for link_slug in &page.links {
+                if let Some(tid) = self.find_page_id_by_slug(&g, link_slug) {
+                    let edge = GraphEdgeData {
+                        source: page.id.clone(),
+                        target: tid.clone(),
+                        kind: EdgeKind::Related,
+                    };
+                    self.graph_store.save_edge(&edge).await?;
+                    g.add_edge(&page.id, &tid, EdgeKind::Related);
+                }
+            }
+        }
+
         if let Some(ref changelog) = self.changelog {
             let entry = ChangelogEntry {
                 timestamp: chrono::Utc::now(),

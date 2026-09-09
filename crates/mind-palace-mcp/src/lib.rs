@@ -61,6 +61,22 @@ You have access to a persistent wiki-style knowledge base that stores synthesize
 - **Links**: slugs of related pages. Builds the knowledge graph.
 - **Visibility**: `general` (default) or `user` (personal). See below.
 
+## Storing Code (scripts, queries, snippets)
+
+You can store Python scripts, SQL queries, shell commands, config, etc. Follow two rules so it stores cleanly and stays findable:
+
+1. **Always wrap code in a fenced block** with a language tag:
+   ```
+   ```python
+   # your code here
+   ```
+   ```
+   Fenced code is parsed as a single unit — lines inside it that start with `## ` will NOT be mistaken for section headings. Unfenced code with `## ` lines WILL corrupt the page on reload.
+
+2. **Pair code with a prose description** in the same section (what it does, when to use it, inputs/outputs). Semantic search embeds the whole page; a bare code dump with no prose is hard to find. The prose is what makes the snippet retrievable.
+
+Use a `Leaf` page for a standalone reusable script/query, or put the code in the `Example` section of a `Skill` page. There is no separate "code" page type — a fenced block in a normal section is the right home.
+
 ## Visibility — General vs User-Scoped Pages
 
 Most pages should be **general** (visible to all users). Use general for:

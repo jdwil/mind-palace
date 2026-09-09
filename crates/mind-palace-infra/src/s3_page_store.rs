@@ -137,9 +137,34 @@ fn parse_sections(markdown: &str) -> Vec<Section> {
     let mut sections = Vec::new();
     let mut current_heading: Option<String> = None;
     let mut current_content = String::new();
+    // Track whether we're inside a fenced code block (``` or ~~~). Lines starting
+    // with "## " inside a fence are code content (e.g. shell/python comments,
+    // markdown examples), NOT section headings.
+    let mut in_fence = false;
+    let mut fence_marker: Option<String> = None;
 
     for line in markdown.lines() {
-        if let Some(heading) = line.strip_prefix("## ") {
+        let trimmed = line.trim_start();
+        // Detect fence open/close. A fence is a run of >=3 backticks or tildes.
+        if let Some(marker) = fence_delim(trimmed) {
+            if in_fence {
+                // Only the same delimiter type closes the fence.
+                if fence_marker.as_deref() == Some(marker) {
+                    in_fence = false;
+                    fence_marker = None;
+                }
+            } else {
+                in_fence = true;
+                fence_marker = Some(marker.to_string());
+            }
+            if current_heading.is_some() {
+                current_content.push_str(line);
+                current_content.push('\n');
+            }
+            continue;
+        }
+
+        if !in_fence && let Some(heading) = line.strip_prefix("## ") {
             if let Some(h) = current_heading.take() {
                 sections.push(Section {
                     heading: h,
@@ -160,6 +185,18 @@ fn parse_sections(markdown: &str) -> Vec<Section> {
         });
     }
     sections
+}
+
+/// Returns the fence delimiter kind ("```" or "~~~") if the line opens/closes a
+/// fenced code block, else None. Matches a leading run of >=3 identical markers.
+fn fence_delim(trimmed_line: &str) -> Option<&'static str> {
+    if trimmed_line.starts_with("```") {
+        Some("```")
+    } else if trimmed_line.starts_with("~~~") {
+        Some("~~~")
+    } else {
+        None
+    }
 }
 
 #[async_trait]
@@ -400,5 +437,127 @@ impl PageStore for S3PageStore {
             }
         }
         Ok(pages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mind_palace_core::domain::value_objects::{Confidence, PageId, PageType, Visibility};
+
+    fn page_with_sections(sections: Vec<Section>) -> Page {
+        let toc = TableOfContents::from_sections(&sections);
+        Page {
+            id: PageId::new(),
+            slug: Slug::new("test-page").unwrap(),
+            title: "Test Page".into(),
+            summary: "A summary".into(),
+            toc,
+            sections,
+            page_type: PageType::Leaf,
+            visibility: Visibility::General,
+            confidence: Confidence::default(),
+            version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            links: vec![],
+        }
+    }
+
+    fn roundtrip(sections: Vec<Section>) -> Vec<Section> {
+        let page = page_with_sections(sections);
+        let raw = serialize_page(&page).unwrap();
+        deserialize_page(&raw).unwrap().sections
+    }
+
+    #[test]
+    fn plain_sections_roundtrip() {
+        let secs = vec![
+            Section {
+                heading: "Overview".into(),
+                content: "Some text.".into(),
+            },
+            Section {
+                heading: "Details".into(),
+                content: "More text.".into(),
+            },
+        ];
+        let out = roundtrip(secs.clone());
+        assert_eq!(out, secs);
+    }
+
+    #[test]
+    fn python_code_with_hash_headings_roundtrips_as_one_section() {
+        // A python block containing lines that start with "## " must NOT be
+        // split into extra sections.
+        let content = "Here is the script:\n\n```python\n## configuration\nx = 1\n## main\nprint(x)\n```\n\nThat's it.";
+        let secs = vec![Section {
+            heading: "Script".into(),
+            content: content.into(),
+        }];
+        let out = roundtrip(secs);
+        assert_eq!(
+            out.len(),
+            1,
+            "code block '## ' lines must not create new sections"
+        );
+        assert_eq!(out[0].heading, "Script");
+        assert!(out[0].content.contains("## configuration"));
+        assert!(out[0].content.contains("## main"));
+        assert!(out[0].content.contains("print(x)"));
+    }
+
+    #[test]
+    fn sql_code_block_roundtrips() {
+        let content = "```sql\nSELECT * FROM users\nWHERE active = true;\n```";
+        let secs = vec![
+            Section {
+                heading: "Query".into(),
+                content: content.into(),
+            },
+            Section {
+                heading: "Notes".into(),
+                content: "Filters active users.".into(),
+            },
+        ];
+        let out = roundtrip(secs);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].content.contains("SELECT * FROM users"));
+        assert_eq!(out[1].heading, "Notes");
+    }
+
+    #[test]
+    fn tilde_fence_roundtrips() {
+        let content = "~~~bash\n## step one\necho hi\n~~~";
+        let secs = vec![Section {
+            heading: "Shell".into(),
+            content: content.into(),
+        }];
+        let out = roundtrip(secs);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].content.contains("## step one"));
+    }
+
+    #[test]
+    fn multiple_sections_with_and_without_code() {
+        let secs = vec![
+            Section {
+                heading: "Intro".into(),
+                content: "Prose only.".into(),
+            },
+            Section {
+                heading: "Code".into(),
+                content: "```py\n## a\nb=2\n```".into(),
+            },
+            Section {
+                heading: "Outro".into(),
+                content: "More prose.".into(),
+            },
+        ];
+        let out = roundtrip(secs.clone());
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].heading, "Intro");
+        assert_eq!(out[1].heading, "Code");
+        assert_eq!(out[2].heading, "Outro");
     }
 }
