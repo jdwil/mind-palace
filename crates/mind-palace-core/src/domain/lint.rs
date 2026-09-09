@@ -21,6 +21,7 @@ pub enum LintCode {
     TitleSlugMismatch,
     MissingSopSection,
     MissingSkillSection,
+    UnfencedHeadingInContent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +57,23 @@ pub fn lint_page(page: &Page, graph: Option<&KnowledgeGraph>) -> Vec<LintIssue> 
                 code: LintCode::EmptySection,
                 severity: Severity::Warning,
                 message: format!("Section '{}' has empty content", section.heading),
+            });
+        }
+
+        // A line starting with "## " OUTSIDE a fenced code block will be
+        // mis-parsed as a new section heading when the page is reloaded from
+        // storage. Warn so the author fences it (code) or demotes the heading.
+        if let Some(line) = unfenced_h2(&section.content) {
+            issues.push(LintIssue {
+                code: LintCode::UnfencedHeadingInContent,
+                severity: Severity::Warning,
+                message: format!(
+                    "Section '{}' contains an unfenced '## ' line ({:?}) that will be \
+                     read back as a separate section. Wrap code in a fenced block (``` or ~~~), \
+                     or change the heading level.",
+                    section.heading,
+                    line.chars().take(40).collect::<String>()
+                ),
             });
         }
     }
@@ -133,6 +151,40 @@ pub fn lint_page(page: &Page, graph: Option<&KnowledgeGraph>) -> Vec<LintIssue> 
     issues
 }
 
+/// Returns the first line in `content` that starts with "## " while OUTSIDE a
+/// fenced code block, or None. Mirrors the fence tracking in the storage-layer
+/// section parser so lint agrees with what will actually happen on reload.
+fn unfenced_h2(content: &str) -> Option<&str> {
+    let mut in_fence = false;
+    let mut fence: Option<&str> = None;
+    for line in content.lines() {
+        let t = line.trim_start();
+        let delim = if t.starts_with("```") {
+            Some("```")
+        } else if t.starts_with("~~~") {
+            Some("~~~")
+        } else {
+            None
+        };
+        if let Some(d) = delim {
+            if in_fence {
+                if fence == Some(d) {
+                    in_fence = false;
+                    fence = None;
+                }
+            } else {
+                in_fence = true;
+                fence = Some(d);
+            }
+            continue;
+        }
+        if !in_fence && line.starts_with("## ") {
+            return Some(line);
+        }
+    }
+    None
+}
+
 fn find_by_slug(kg: &KnowledgeGraph, slug: &Slug) -> bool {
     // Linear scan — acceptable for lint operations on small graphs
     kg.get_index_pages(&super::tenant::TenantContext::global())
@@ -196,6 +248,37 @@ mod tests {
         let kg = KnowledgeGraph::new(); // page not in graph
         let issues = lint_page(&page, Some(&kg));
         assert!(issues.iter().any(|i| i.code == LintCode::Orphan));
+    }
+
+    #[test]
+    fn unfenced_h2_line_in_content_warns() {
+        let mut page = valid_page();
+        page.sections.push(Section {
+            heading: "Script".into(),
+            content: "## not fenced\nsome code".into(),
+        });
+        let issues = lint_page(&page, None);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == LintCode::UnfencedHeadingInContent)
+        );
+    }
+
+    #[test]
+    fn fenced_h2_line_in_content_ok() {
+        let mut page = valid_page();
+        page.sections.push(Section {
+            heading: "Script".into(),
+            content: "```python\n## configuration\nx = 1\n```".into(),
+        });
+        let issues = lint_page(&page, None);
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.code == LintCode::UnfencedHeadingInContent),
+            "fenced '## ' lines must not trigger the warning"
+        );
     }
 
     #[test]
