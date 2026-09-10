@@ -237,7 +237,19 @@ impl PageStore for S3PageStore {
                         .map_err(|e| MindPalaceError::Store(e.to_string()))?;
                     return deserialize_page(&raw);
                 }
-                Err(_) => continue,
+                Err(e) => {
+                    // Only a genuine "object does not exist" means we should try the
+                    // next prefix. Any other error (auth expired, network, throttling)
+                    // must surface — otherwise it masquerades as "page not found" and
+                    // sends users chasing phantom data loss.
+                    let svc = e.into_service_error();
+                    if svc.is_no_such_key() {
+                        continue;
+                    }
+                    return Err(MindPalaceError::Store(format!(
+                        "S3 get_object failed for {key}: {svc}"
+                    )));
+                }
             }
         }
         Err(MindPalaceError::PageNotFound(slug.as_str().to_string()))
