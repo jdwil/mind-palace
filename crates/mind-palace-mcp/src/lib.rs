@@ -36,6 +36,7 @@ You have access to a persistent wiki-style knowledge base that stores synthesize
    - If a page exists, UPDATE it (`wiki_update`) — do not create duplicates
    - If no page exists, CREATE one (`wiki_create`)
    - Synthesize — store the insight, not the raw conversation
+   - `wiki_update` MERGES sections by heading by default: a section whose heading matches is updated in place, new headings are appended, and headings you omit are preserved. So you can update one section without resending the whole page. Pass `replace_sections: true` only when you intend to rewrite the entire page.
 
 4. **Link everything.** Always add relevant slugs to the `links` field when creating or updating. This builds the graph that makes traversal useful.
 
@@ -194,8 +195,15 @@ pub struct UpdateParams {
     pub slug: String,
     pub title: Option<String>,
     pub summary: Option<String>,
+    #[schemars(
+        description = "Sections to write. By DEFAULT these are MERGED into the page by heading: a section whose heading matches an existing one replaces that section's content; new headings are appended; headings you don't include are left untouched. So you can update a single section without resending the whole page. Set replace_sections=true to instead replace the entire section list."
+    )]
     pub sections: Option<Vec<SectionInput>>,
     pub links: Option<Vec<String>>,
+    #[schemars(
+        description = "If true, fully REPLACE the page's section list with the provided sections (anything not included is deleted). Default false = merge by heading. Only use true when intentionally rewriting the whole page."
+    )]
+    pub replace_sections: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -401,6 +409,7 @@ impl MindPalaceMcpServer {
             summary: params.summary,
             sections,
             links,
+            replace_sections: params.replace_sections.unwrap_or(false),
         };
         let (page, issues) = self
             .service

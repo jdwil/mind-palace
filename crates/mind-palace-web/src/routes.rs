@@ -138,6 +138,8 @@ pub struct UpdatePageRequest {
     pub summary: Option<String>,
     pub sections: Option<Vec<SectionInput>>,
     pub links: Option<Vec<String>>,
+    /// Web editor sends the full page, so this defaults to true (replace).
+    pub replace_sections: Option<bool>,
 }
 
 pub async fn update_page(
@@ -162,6 +164,7 @@ pub async fn update_page(
         links: body
             .links
             .map(|ls| ls.into_iter().filter_map(|s| Slug::new(&s).ok()).collect()),
+        replace_sections: body.replace_sections.unwrap_or(true),
     };
     let (page, _issues) = state
         .service

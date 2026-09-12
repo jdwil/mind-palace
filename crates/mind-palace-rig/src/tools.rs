@@ -307,8 +307,14 @@ pub struct WikiUpdateArgs {
     pub slug: String,
     pub title: Option<String>,
     pub summary: Option<String>,
+    /// Sections to write. By default MERGED by heading (matching heading updated,
+    /// new headings appended, others untouched) so you can update one section
+    /// without resending the whole page. Set replace_sections=true to replace all.
     pub sections: Option<Vec<SectionInput>>,
     pub links: Option<Vec<String>>,
+    /// If true, fully replace the section list (anything omitted is deleted).
+    /// Default false = merge by heading.
+    pub replace_sections: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -350,6 +356,7 @@ impl Tool for WikiUpdateTool {
             summary: args.summary,
             sections,
             links,
+            replace_sections: args.replace_sections.unwrap_or(false),
         };
         let (page, issues) = self.service.update_page(&slug, input, &self.ctx).await?;
         Ok(WikiUpdateOutput {

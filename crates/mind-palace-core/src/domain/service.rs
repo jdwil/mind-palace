@@ -28,6 +28,10 @@ pub struct UpdatePageInput {
     pub summary: Option<String>,
     pub sections: Option<Vec<Section>>,
     pub links: Option<Vec<Slug>>,
+    /// When false (default), provided sections are merged into the existing page
+    /// by heading: matching headings are updated in place, new headings appended,
+    /// untouched headings preserved. When true, the section list is fully replaced.
+    pub replace_sections: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +184,25 @@ impl WikiService {
             page.summary = summary;
         }
         if let Some(sections) = input.sections {
-            page.sections = sections;
+            if input.replace_sections {
+                // Full replace (explicit opt-in).
+                page.sections = sections;
+            } else {
+                // Merge by heading: update matching headings in place, append new
+                // ones, preserve untouched headings. This is the safe default so an
+                // agent updating one section doesn't wipe the rest of the page.
+                for incoming in sections {
+                    if let Some(existing) = page
+                        .sections
+                        .iter_mut()
+                        .find(|s| s.heading == incoming.heading)
+                    {
+                        existing.content = incoming.content;
+                    } else {
+                        page.sections.push(incoming);
+                    }
+                }
+            }
             page.toc = super::value_objects::TableOfContents::from_sections(&page.sections);
         }
         if let Some(links) = input.links {
@@ -691,6 +713,7 @@ mod tests {
                     summary: None,
                     sections: None,
                     links: None,
+                    replace_sections: false,
                 },
                 &ctx,
             )
@@ -698,6 +721,77 @@ mod tests {
             .unwrap();
         assert_eq!(updated.title, "Advanced Rust");
         assert_eq!(updated.version, 2);
+    }
+
+    #[tokio::test]
+    async fn update_merges_sections_by_heading() {
+        let svc = make_service();
+        let ctx = TenantContext::global();
+        svc.create_page(sample_input(), &ctx).await.unwrap();
+        // sample_input has one section: "Overview"
+
+        // Update the existing "Overview" and add a new "Examples" — "Overview"
+        // content changes, "Examples" is appended, nothing is lost.
+        let (updated, _) = svc
+            .update_page(
+                &Slug::new("rust-basics").unwrap(),
+                UpdatePageInput {
+                    title: None,
+                    summary: None,
+                    sections: Some(vec![
+                        Section {
+                            heading: "Overview".into(),
+                            content: "Updated overview.".into(),
+                        },
+                        Section {
+                            heading: "Examples".into(),
+                            content: "An example.".into(),
+                        },
+                    ]),
+                    links: None,
+                    replace_sections: false,
+                },
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.sections.len(), 2, "merge keeps + adds, not replace");
+        let overview = updated
+            .sections
+            .iter()
+            .find(|s| s.heading == "Overview")
+            .unwrap();
+        assert_eq!(overview.content, "Updated overview.");
+        assert!(updated.sections.iter().any(|s| s.heading == "Examples"));
+    }
+
+    #[tokio::test]
+    async fn update_replace_sections_overwrites_all() {
+        let svc = make_service();
+        let ctx = TenantContext::global();
+        svc.create_page(sample_input(), &ctx).await.unwrap();
+
+        let (updated, _) = svc
+            .update_page(
+                &Slug::new("rust-basics").unwrap(),
+                UpdatePageInput {
+                    title: None,
+                    summary: None,
+                    sections: Some(vec![Section {
+                        heading: "Only Section".into(),
+                        content: "New content.".into(),
+                    }]),
+                    links: None,
+                    replace_sections: true,
+                },
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.sections.len(), 1);
+        assert_eq!(updated.sections[0].heading, "Only Section");
     }
 
     #[tokio::test]
