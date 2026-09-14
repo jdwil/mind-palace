@@ -12,6 +12,8 @@ use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
+pub mod setup;
+
 /// Returned in the MCP `initialize` response `instructions` field. Clients that
 /// surface server instructions to the model will show this automatically at
 /// connection time — no base-prompt configuration needed by the operator.
