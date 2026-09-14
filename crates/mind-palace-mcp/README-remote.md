@@ -13,7 +13,7 @@ transport differs.
 | Binary | Transport | Use for |
 |--------|-----------|---------|
 | `mind-palace-mcp` | stdio | Local agents (Kiro, Grok, Claude Desktop) that spawn the process |
-| `mind-palace-mcp-remote` | HTTP (Streamable) | Shared deployment on EC2/ECS/Lambda; many agents connect to one endpoint |
+| `mind-palace-mcp-remote` | HTTP (Streamable) | Shared deployment on EC2/ECS; many agents connect to one endpoint |
 
 ## Configuration
 
@@ -87,12 +87,10 @@ If deploying behind a VPN with no token, omit the `headers` block.
 
 ## Deployment notes
 
-- **ECS/Fargate:** run the container as a long-lived service (not a scheduled
-  task). Point the target group health check at `/health`. Give the task role
-  the `mind-palace-runtime` IAM policy.
+- **ECS/Fargate (recommended):** run the container as a long-lived service (not
+  a scheduled task). Point the target group health check at `/health`. Give the
+  task role the `mind-palace-runtime` IAM policy.
 - **EC2:** run behind nginx/ALB; the instance profile supplies AWS creds.
-- **Lambda:** works for request/response but the Streamable HTTP session model
-  fits a long-lived container better; ECS is the recommended path.
 - **State:** the in-memory knowledge graph is loaded once at startup. If pages
   change out-of-band (e.g. the dreaming process writes new pages), restart the
   service to reload, or rely on the fact that reads/search hit S3/Vectors live.
