@@ -116,9 +116,12 @@ See `variables.tf`. Key ones: `name`, `region`, `vpc_id`, `subnet_ids`,
 
 ## Notes
 
+- **Full deployment runbook:** see [DEPLOYMENT.md](DEPLOYMENT.md) for the
+  complete end-to-end procedure (image build + Terraform + client wiring).
+- **Image builds:** run `build-and-push-aws.sh` to build
+  `crates/mind-palace-mcp/Dockerfile.remote` and push to ECR. Do this before
+  `terraform apply` — Terraform references the image, it does not build it.
 - **HTTPS:** this template terminates HTTP at the ALB. For a public endpoint,
   add an ACM cert + HTTPS listener (443) and redirect 80→443. Left out here to
   keep the template minimal and because the default (internal/VPN) case doesn't
   require TLS at the ALB.
-- **Image builds:** build/push `mind-palace-mcp-remote` from
-  `crates/mind-palace-mcp/Dockerfile.remote`.
