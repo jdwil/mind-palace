@@ -23,6 +23,10 @@ pub struct CreatePageInput {
     pub links: Vec<Slug>,
 }
 
+/// Fields set to `None` are left unchanged. Consumers are encouraged to build
+/// this with struct-update syntax (`UpdatePageInput { title: ..., ..Default::default() }`)
+/// so that future field additions remain backward compatible.
+#[derive(Debug, Default, Clone)]
 pub struct UpdatePageInput {
     pub title: Option<String>,
     pub summary: Option<String>,
