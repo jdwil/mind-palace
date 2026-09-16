@@ -38,7 +38,7 @@ You have access to a persistent wiki-style knowledge base that stores synthesize
    - If a page exists, UPDATE it (`wiki_update`) — do not create duplicates
    - If no page exists, CREATE one (`wiki_create`)
    - Synthesize — store the insight, not the raw conversation
-   - `wiki_update` MERGES sections by heading by default: a section whose heading matches is updated in place, new headings are appended, and headings you omit are preserved. So you can update one section without resending the whole page. Pass `replace_sections: true` only when you intend to rewrite the entire page.
+   - `wiki_update` MERGES sections by heading by default: a section whose heading matches is updated in place, new headings are appended, and headings you omit are preserved. So you can update one section without resending the whole page. To REMOVE a section, pass its heading in `delete_sections`. Pass `replace_sections: true` only when you intend to rewrite the entire page.
 
 4. **Link everything.** Always add relevant slugs to the `links` field when creating or updating. This builds the graph that makes traversal useful.
 
@@ -128,7 +128,7 @@ Examples:
 ## Maintenance Habits
 
 - When you notice outdated information while reading a page, update it immediately
-- When lint issues are returned after create/update, fix them before moving on
+- After create/update, `lint_detail` lists each issue (code, severity, message). Fix Errors before moving on. Warnings/Info (e.g. a BrokenLink to a page you haven't created yet, or an Orphan) are advisory — address them when practical, but they are not failures and long-established pages may carry them.
 - Prefer fewer, richer, well-linked pages over many shallow disconnected ones
 "#;
 
@@ -146,7 +146,9 @@ pub struct MindPalaceMcpServer {
 pub struct SearchParams {
     #[schemars(description = "Search query")]
     pub query: String,
-    #[schemars(description = "Max results (default 5)")]
+    #[schemars(
+        description = "Max results (default 5, hard max 100 — S3 Vectors limit). Search is for relevance ranking, NOT enumeration; to list every page use wiki_list."
+    )]
     pub limit: Option<usize>,
 }
 
@@ -206,13 +208,17 @@ pub struct UpdateParams {
         description = "If true, fully REPLACE the page's section list with the provided sections (anything not included is deleted). Default false = merge by heading. Only use true when intentionally rewriting the whole page."
     )]
     pub replace_sections: Option<bool>,
+    #[schemars(
+        description = "Section headings to delete from the page. Use this to remove a stale/superseded section (applied after merge/replace)."
+    )]
+    pub delete_sections: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListParams {
     #[schemars(description = "Filter by page type: Index, Concept, Entity, Decision, Leaf")]
     pub page_type: Option<String>,
-    #[schemars(description = "Max results (default 20)")]
+    #[schemars(description = "Max results. Omit to return ALL pages (no cap).")]
     pub limit: Option<usize>,
 }
 
@@ -291,11 +297,23 @@ impl MindPalaceMcpServer {
             }
             _ => ReadLevel::Summary,
         };
-        let resp = self
-            .service
-            .read_page(&slug, level, &self.ctx)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let resp = match self.service.read_page(&slug, level, &self.ctx).await {
+            Ok(r) => r,
+            Err(mind_palace_core::error::MindPalaceError::PageNotFound(_)) => {
+                // Either the page doesn't exist or it's scoped to another user
+                // (visibility hides it). Return a clean, non-error result so the
+                // agent handles it gracefully instead of surfacing a raw crash.
+                let value = serde_json::json!({
+                    "found": false,
+                    "slug": params.slug,
+                    "message": "Page not found, or not accessible with the current visibility (it may be scoped to another user).",
+                });
+                let content = Content::json(value)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                return Ok(CallToolResult::success(vec![content]));
+            }
+            Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+        };
 
         let value = page_response_to_value(&resp);
         let content =
@@ -382,6 +400,7 @@ impl MindPalaceMcpServer {
             "slug": page.slug.as_str(),
             "title": page.title,
             "lint_issues": issues.len(),
+            "lint_detail": lint_issues_to_json(&issues),
         });
         let content =
             Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -412,6 +431,7 @@ impl MindPalaceMcpServer {
             sections,
             links,
             replace_sections: params.replace_sections.unwrap_or(false),
+            delete_sections: params.delete_sections.unwrap_or_default(),
         };
         let (page, issues) = self
             .service
@@ -423,6 +443,7 @@ impl MindPalaceMcpServer {
             "slug": page.slug.as_str(),
             "version": page.version,
             "lint_issues": issues.len(),
+            "lint_detail": lint_issues_to_json(&issues),
         });
         let content =
             Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -437,7 +458,8 @@ impl MindPalaceMcpServer {
         let filter = PageFilter {
             page_type: params.page_type.as_deref().map(parse_page_type),
             visibility: None,
-            limit: Some(params.limit.unwrap_or(20)),
+            // None = return all pages (no silent cap). Callers may still pass a limit.
+            limit: params.limit,
         };
         let pages = self
             .service
@@ -514,12 +536,29 @@ impl ServerHandler for MindPalaceMcpServer {
 
 // --- Helpers ---
 
+fn lint_issues_to_json(issues: &[mind_palace_core::domain::lint::LintIssue]) -> serde_json::Value {
+    serde_json::Value::Array(
+        issues
+            .iter()
+            .map(|i| {
+                serde_json::json!({
+                    "code": format!("{:?}", i.code),
+                    "severity": format!("{:?}", i.severity),
+                    "message": i.message,
+                })
+            })
+            .collect(),
+    )
+}
+
 fn parse_page_type(s: &str) -> PageType {
     match s {
         "Index" => PageType::Index,
         "Concept" => PageType::Concept,
         "Entity" => PageType::Entity,
         "Decision" => PageType::Decision,
+        "Sop" => PageType::Sop,
+        "Skill" => PageType::Skill,
         _ => PageType::Leaf,
     }
 }

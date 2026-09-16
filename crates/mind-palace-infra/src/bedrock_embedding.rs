@@ -32,8 +32,30 @@ impl BedrockEmbedding {
 #[async_trait]
 impl EmbeddingPort for BedrockEmbedding {
     async fn embed_text(&self, text: &str) -> Result<Vec<f64>, MindPalaceError> {
+        // Titan Embeddings v2 accepts up to ~8192 tokens. Oversized input is
+        // rejected with a service error. Since the embedding is only used for
+        // semantic ranking (the full page content lives in S3), truncating the
+        // input to a safe character budget is acceptable and far better than
+        // failing the whole operation. ~30k chars is comfortably under the limit.
+        const MAX_EMBED_CHARS: usize = 30_000;
+        let input: &str = if text.len() > MAX_EMBED_CHARS {
+            // Truncate on a char boundary.
+            let mut end = MAX_EMBED_CHARS;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            tracing::warn!(
+                original_len = text.len(),
+                truncated_to = end,
+                "embedding input truncated to fit model limit"
+            );
+            &text[..end]
+        } else {
+            text
+        };
+
         let body = serde_json::json!({
-            "inputText": text
+            "inputText": input
         });
         let body_bytes =
             serde_json::to_vec(&body).map_err(|e| MindPalaceError::Embedding(e.to_string()))?;

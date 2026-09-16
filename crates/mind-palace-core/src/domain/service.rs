@@ -36,6 +36,8 @@ pub struct UpdatePageInput {
     /// by heading: matching headings are updated in place, new headings appended,
     /// untouched headings preserved. When true, the section list is fully replaced.
     pub replace_sections: bool,
+    /// Headings to delete from the page (applied after merge/replace).
+    pub delete_sections: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,17 +111,7 @@ impl WikiService {
 
         self.page_store.save_page(&page).await?;
 
-        let text = page.full_content();
-        let embedding = self.embedding.embed_text(&text).await?;
-        let meta = EmbeddingMetadata {
-            page_id: page.id.clone(),
-            slug: page.slug.clone(),
-            title: page.title.clone(),
-            visibility: page.visibility.clone(),
-        };
-        self.vector_search
-            .upsert_embedding(&meta, &embedding)
-            .await?;
+        self.reindex_embedding(&page).await;
 
         let node_data = GraphNodeData {
             page_id: page.id.clone(),
@@ -209,6 +201,12 @@ impl WikiService {
             }
             page.toc = super::value_objects::TableOfContents::from_sections(&page.sections);
         }
+        // Delete requested sections (by heading), applied after merge/replace.
+        if !input.delete_sections.is_empty() {
+            page.sections
+                .retain(|s| !input.delete_sections.contains(&s.heading));
+            page.toc = super::value_objects::TableOfContents::from_sections(&page.sections);
+        }
         if let Some(links) = input.links {
             page.links = links;
         }
@@ -222,17 +220,7 @@ impl WikiService {
 
         self.page_store.save_page(&page).await?;
 
-        let text = page.full_content();
-        let embedding = self.embedding.embed_text(&text).await?;
-        let meta = EmbeddingMetadata {
-            page_id: page.id.clone(),
-            slug: page.slug.clone(),
-            title: page.title.clone(),
-            visibility: page.visibility.clone(),
-        };
-        self.vector_search
-            .upsert_embedding(&meta, &embedding)
-            .await?;
+        self.reindex_embedding(&page).await;
 
         // Update graph node
         let node_data = GraphNodeData {
@@ -331,10 +319,25 @@ impl WikiService {
         filter: &crate::ports::page_store::PageFilter,
         ctx: &TenantContext,
     ) -> Result<Vec<Page>, MindPalaceError> {
+        // Reload the graph from the store so long-lived servers (remote MCP) see
+        // pages created after startup. Without this, list silently omits pages
+        // created by other clients since the process started. Only replace the
+        // in-memory graph if the reload returned data — never clobber good state
+        // with an empty/failed read.
+        if let Ok(data) = self.graph_store.load_graph().await
+            && !data.nodes.is_empty()
+        {
+            let mut g = self.graph.write().await;
+            *g = KnowledgeGraph::from_data(data);
+        }
+
         // Use in-memory graph for listing (avoids S3 GetObject per page).
         // Returns lightweight Page stubs with metadata only.
         let g = self.graph.read().await;
-        let limit = filter.limit.unwrap_or(50);
+        // Default to effectively unbounded; only apply a limit if the caller
+        // explicitly set one. Silently capping at a low number made agents
+        // conclude pages didn't exist.
+        let limit = filter.limit.unwrap_or(usize::MAX);
         let pages: Vec<Page> = g
             .all_nodes(ctx)
             .into_iter()
@@ -503,6 +506,37 @@ impl WikiService {
     ) -> Option<super::value_objects::PageId> {
         let ctx = TenantContext::global();
         graph.find_by_slug(slug, &ctx).map(|n| n.page_id.clone())
+    }
+
+    /// Best-effort embedding + vector upsert. The page is already durably saved
+    /// before this runs, so a failure here must never propagate as an error —
+    /// doing so previously caused agents to treat a successful write as failed
+    /// and delete data. Failures are logged; the page stays readable and can be
+    /// re-indexed later.
+    async fn reindex_embedding(&self, page: &Page) {
+        let text = page.full_content();
+        match self.embedding.embed_text(&text).await {
+            Ok(embedding) => {
+                let meta = EmbeddingMetadata {
+                    page_id: page.id.clone(),
+                    slug: page.slug.clone(),
+                    title: page.title.clone(),
+                    visibility: page.visibility.clone(),
+                };
+                if let Err(e) = self.vector_search.upsert_embedding(&meta, &embedding).await {
+                    tracing::warn!(
+                        slug = %page.slug.as_str(), error = %e,
+                        "page saved but vector upsert failed; not searchable until reindexed"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    slug = %page.slug.as_str(), error = %e,
+                    "page saved but embedding failed; not searchable until reindexed"
+                );
+            }
+        }
     }
 }
 
@@ -718,6 +752,7 @@ mod tests {
                     sections: None,
                     links: None,
                     replace_sections: false,
+                    delete_sections: Vec::new(),
                 },
                 &ctx,
             )
@@ -754,6 +789,7 @@ mod tests {
                     ]),
                     links: None,
                     replace_sections: false,
+                    delete_sections: Vec::new(),
                 },
                 &ctx,
             )
@@ -768,6 +804,42 @@ mod tests {
             .unwrap();
         assert_eq!(overview.content, "Updated overview.");
         assert!(updated.sections.iter().any(|s| s.heading == "Examples"));
+    }
+
+    #[tokio::test]
+    async fn update_can_delete_sections() {
+        let svc = make_service();
+        let ctx = TenantContext::global();
+        svc.create_page(sample_input(), &ctx).await.unwrap();
+        // Add a second section, then delete the original "Overview".
+        svc.update_page(
+            &Slug::new("rust-basics").unwrap(),
+            UpdatePageInput {
+                sections: Some(vec![Section {
+                    heading: "Extra".into(),
+                    content: "extra".into(),
+                }]),
+                ..Default::default()
+            },
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let (updated, _) = svc
+            .update_page(
+                &Slug::new("rust-basics").unwrap(),
+                UpdatePageInput {
+                    delete_sections: vec!["Overview".into()],
+                    ..Default::default()
+                },
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        assert!(!updated.sections.iter().any(|s| s.heading == "Overview"));
+        assert!(updated.sections.iter().any(|s| s.heading == "Extra"));
     }
 
     #[tokio::test]
@@ -788,6 +860,7 @@ mod tests {
                     }]),
                     links: None,
                     replace_sections: true,
+                    delete_sections: Vec::new(),
                 },
                 &ctx,
             )

@@ -165,6 +165,7 @@ pub async fn update_page(
             .links
             .map(|ls| ls.into_iter().filter_map(|s| Slug::new(&s).ok()).collect()),
         replace_sections: body.replace_sections.unwrap_or(true),
+        delete_sections: Vec::new(),
     };
     let (page, _issues) = state
         .service

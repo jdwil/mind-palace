@@ -77,12 +77,15 @@ impl VectorSearchPort for S3VectorsSearch {
     ) -> Result<Vec<SearchResult>, MindPalaceError> {
         let float32_vec: Vec<f32> = query_embedding.iter().map(|&v| v as f32).collect();
 
+        // S3 Vectors caps top_k at 100 per query. Clamp explicitly so behavior
+        // is predictable rather than silently truncated by the service.
+        let top_k = limit.clamp(1, 100) as i32;
         let mut req = self
             .client
             .query_vectors()
             .vector_bucket_name(&self.config.bucket_name)
             .index_name(&self.config.index_name)
-            .top_k(limit as i32)
+            .top_k(top_k)
             .query_vector(VectorData::Float32(float32_vec))
             .return_metadata(true)
             .return_distance(true);

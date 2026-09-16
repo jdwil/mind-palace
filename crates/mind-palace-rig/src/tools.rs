@@ -315,6 +315,8 @@ pub struct WikiUpdateArgs {
     /// If true, fully replace the section list (anything omitted is deleted).
     /// Default false = merge by heading.
     pub replace_sections: Option<bool>,
+    /// Section headings to delete (applied after merge/replace).
+    pub delete_sections: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -357,6 +359,7 @@ impl Tool for WikiUpdateTool {
             sections,
             links,
             replace_sections: args.replace_sections.unwrap_or(false),
+            delete_sections: args.delete_sections.unwrap_or_default(),
         };
         let (page, issues) = self.service.update_page(&slug, input, &self.ctx).await?;
         Ok(WikiUpdateOutput {
