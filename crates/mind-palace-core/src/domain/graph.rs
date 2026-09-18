@@ -5,7 +5,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
 
 use super::tenant::TenantContext;
-use super::value_objects::{EdgeKind, PageId, PageType, Slug, Visibility};
+use super::value_objects::{EdgeKind, PageAccess, PageId, PageType, Slug, Visibility};
 use crate::ports::graph::GraphData;
 
 #[cfg(test)]
@@ -18,6 +18,8 @@ pub struct GraphNode {
     pub title: String,
     pub summary: String,
     pub visibility: Visibility,
+    /// Access model (Spec 2) for owner/grant filtering during traversal/list.
+    pub access: PageAccess,
     pub page_type: PageType,
 }
 
@@ -59,6 +61,7 @@ impl KnowledgeGraph {
                 title: node.title,
                 summary: node.summary,
                 visibility: node.visibility,
+                access: node.access,
                 page_type: node.page_type,
             });
         }
@@ -130,7 +133,7 @@ impl KnowledgeGraph {
                     Direction::Incoming => edge_ref.source(),
                 };
                 let neighbor = &self.graph[neighbor_idx];
-                if ctx.can_see(&neighbor.visibility) {
+                if ctx.can_see_page(&neighbor.access) {
                     Some(NeighborInfo {
                         page_id: neighbor.page_id.clone(),
                         slug: neighbor.slug.clone(),
@@ -171,7 +174,7 @@ impl KnowledgeGraph {
                     continue;
                 }
                 let neighbor = &self.graph[neighbor_idx];
-                if !ctx.can_see(&neighbor.visibility) {
+                if !ctx.can_see_page(&neighbor.access) {
                     continue;
                 }
                 visited.insert(neighbor_idx, depth + 1);
@@ -194,7 +197,7 @@ impl KnowledgeGraph {
             .node_indices()
             .filter_map(|idx| {
                 let node = &self.graph[idx];
-                if node.page_type == PageType::Index && ctx.can_see(&node.visibility) {
+                if node.page_type == PageType::Index && ctx.can_see_page(&node.access) {
                     Some(node)
                 } else {
                     None
@@ -214,7 +217,7 @@ impl KnowledgeGraph {
     pub fn find_by_slug(&self, slug: &Slug, ctx: &TenantContext) -> Option<&GraphNode> {
         self.graph.node_indices().find_map(|idx| {
             let node = &self.graph[idx];
-            if &node.slug == slug && ctx.can_see(&node.visibility) {
+            if &node.slug == slug && ctx.can_see_page(&node.access) {
                 Some(node)
             } else {
                 None
@@ -227,7 +230,7 @@ impl KnowledgeGraph {
             .node_indices()
             .filter_map(|idx| {
                 let node = &self.graph[idx];
-                if ctx.can_see(&node.visibility) {
+                if ctx.can_see_page(&node.access) {
                     Some(node)
                 } else {
                     None
@@ -257,6 +260,7 @@ mod tests {
             slug: Slug::new(slug).unwrap(),
             title: id.to_string(),
             summary: format!("Summary of {id}"),
+            access: PageAccess::from_visibility(&vis),
             visibility: vis,
             page_type: ptype,
         }
@@ -392,6 +396,7 @@ mod tests {
                     title: "One".into(),
                     summary: "S1".into(),
                     visibility: Visibility::General,
+                    access: PageAccess::from_visibility(&Visibility::General),
                     page_type: PageType::Index,
                 },
                 GraphNodeData {
@@ -400,6 +405,7 @@ mod tests {
                     title: "Two".into(),
                     summary: "S2".into(),
                     visibility: Visibility::General,
+                    access: PageAccess::from_visibility(&Visibility::General),
                     page_type: PageType::Leaf,
                 },
             ],

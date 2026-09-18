@@ -184,6 +184,7 @@ async fn create_index_concept_leaf_and_verify_graph_connectivity() {
             page_type: PageType::Index,
             visibility: Visibility::General,
             links: vec![],
+            base_visibility: None,
         },
         &ctx,
     )
@@ -203,6 +204,7 @@ async fn create_index_concept_leaf_and_verify_graph_connectivity() {
             page_type: PageType::Index, // Make it Index so leaf can link to it
             visibility: Visibility::General,
             links: vec![Slug::new("knowledge-index").unwrap()],
+            base_visibility: None,
         },
         &ctx,
     )
@@ -223,6 +225,7 @@ async fn create_index_concept_leaf_and_verify_graph_connectivity() {
             page_type: PageType::Leaf,
             visibility: Visibility::General,
             links: vec![Slug::new("rust-language").unwrap()],
+            base_visibility: None,
         },
         &ctx,
     )
@@ -276,6 +279,7 @@ async fn read_at_different_levels_summary_shorter_than_full() {
             page_type: PageType::Concept,
             visibility: Visibility::General,
             links: vec![],
+            base_visibility: None,
         },
         &ctx,
     )
@@ -326,6 +330,7 @@ async fn tenant_isolation_prevents_cross_tenant_access() {
             page_type: PageType::Leaf,
             visibility: Visibility::Tenant(TenantId::new("tenant-a")),
             links: vec![],
+            base_visibility: None,
         },
         &tenant_a,
     )
@@ -379,6 +384,7 @@ async fn tenant_isolation_list_pages_filters_correctly() {
             page_type: PageType::Leaf,
             visibility: Visibility::Tenant(TenantId::new("tenant-a")),
             links: vec![],
+            base_visibility: None,
         },
         &tenant_a,
     )
@@ -397,6 +403,7 @@ async fn tenant_isolation_list_pages_filters_correctly() {
             page_type: PageType::Concept,
             visibility: Visibility::General,
             links: vec![],
+            base_visibility: None,
         },
         &tenant_a,
     )

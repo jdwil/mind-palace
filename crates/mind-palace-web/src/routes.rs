@@ -120,6 +120,7 @@ pub async fn create_page(
         page_type: body.page_type.unwrap_or(PageType::Concept),
         visibility: Visibility::General,
         links,
+        base_visibility: None,
     };
     let (page, _issues) = state
         .service

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::domain::value_objects::{EdgeKind, PageId, PageType, Slug, Visibility};
+use crate::domain::value_objects::{EdgeKind, PageAccess, PageId, PageType, Slug, Visibility};
 use crate::error::MindPalaceError;
 
 /// A node as stored/loaded from the graph backend.
@@ -11,6 +11,9 @@ pub struct GraphNodeData {
     pub title: String,
     pub summary: String,
     pub visibility: Visibility,
+    /// Access model (Spec 2) stored on the node so list/search/traverse can
+    /// filter by owner/grants without an S3 fetch.
+    pub access: PageAccess,
     pub page_type: PageType,
 }
 
