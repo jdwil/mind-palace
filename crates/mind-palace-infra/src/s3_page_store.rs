@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use mind_palace_core::domain::page::Page;
 use mind_palace_core::domain::tenant::TenantContext;
 use mind_palace_core::domain::value_objects::{
-    Confidence, PageId, PageType, Section, Slug, TableOfContents, Visibility,
+    Confidence, PageAccess, PageId, PageType, Section, Slug, TableOfContents, Visibility,
 };
 use mind_palace_core::error::MindPalaceError;
 use mind_palace_core::ports::page_store::{PageFilter, PageStore};
@@ -63,6 +63,10 @@ struct PageFrontmatter {
     summary: String,
     page_type: PageType,
     visibility: Visibility,
+    /// Spec 2 access model. Optional for backward compatibility: pages written
+    /// before Spec 2 have no `access` and are migrated from `visibility` on load.
+    #[serde(default)]
+    access: Option<PageAccess>,
     confidence: f32,
     version: u32,
     created_at: DateTime<Utc>,
@@ -79,6 +83,7 @@ fn serialize_page(page: &Page) -> Result<String, MindPalaceError> {
         summary: page.summary.clone(),
         page_type: page.page_type.clone(),
         visibility: page.visibility.clone(),
+        access: Some(page.access.clone()),
         confidence: page.confidence.value(),
         version: page.version,
         created_at: page.created_at,
@@ -116,6 +121,12 @@ fn deserialize_page(raw: &str) -> Result<Page, MindPalaceError> {
     let links: Result<Vec<Slug>, _> = fm.links.iter().map(|s| Slug::new(s)).collect();
     let links = links.map_err(|e| MindPalaceError::Serialization(e.to_string()))?;
 
+    // Migrate pre-Spec-2 pages (no `access` in frontmatter) from their legacy
+    // visibility with no increase in openness.
+    let access = fm
+        .access
+        .unwrap_or_else(|| PageAccess::from_visibility(&fm.visibility));
+
     Ok(Page {
         id: PageId(fm.id),
         slug,
@@ -125,6 +136,7 @@ fn deserialize_page(raw: &str) -> Result<Page, MindPalaceError> {
         sections,
         page_type: fm.page_type,
         visibility: fm.visibility,
+        access,
         confidence: Confidence::new(fm.confidence).unwrap_or_default(),
         version: fm.version,
         created_at: fm.created_at,
@@ -455,7 +467,9 @@ impl PageStore for S3PageStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mind_palace_core::domain::value_objects::{Confidence, PageId, PageType, Visibility};
+    use mind_palace_core::domain::value_objects::{
+        Confidence, PageAccess, PageId, PageType, Visibility,
+    };
 
     fn page_with_sections(sections: Vec<Section>) -> Page {
         let toc = TableOfContents::from_sections(&sections);
@@ -468,6 +482,7 @@ mod tests {
             sections,
             page_type: PageType::Leaf,
             visibility: Visibility::General,
+            access: PageAccess::from_visibility(&Visibility::General),
             confidence: Confidence::default(),
             version: 1,
             created_at: Utc::now(),

@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::types::AttributeValue;
 
-use mind_palace_core::domain::value_objects::{EdgeKind, PageId, Slug};
+use mind_palace_core::domain::value_objects::{EdgeKind, PageAccess, PageId, Slug};
 use mind_palace_core::error::MindPalaceError;
 use mind_palace_core::ports::graph::{GraphData, GraphEdgeData, GraphNodeData, GraphStore};
 
@@ -66,6 +66,12 @@ impl GraphStore for DynamoGraphStore {
                 let sk = get_s(item, "SK")?;
                 let pk = get_s(item, "PK")?;
 
+                // Group items (PK=GROUP#...) live in the same table but are not
+                // graph nodes; skip them here (handled by DynamoGroupStore).
+                if pk.starts_with("GROUP#") {
+                    continue;
+                }
+
                 if sk == "META" {
                     let page_id = Self::parse_page_id(&pk)?;
                     let slug = Slug::new(&get_s(item, "slug")?)
@@ -79,12 +85,21 @@ impl GraphStore for DynamoGraphStore {
                     let page_type = serde_json::from_str(&page_type_str)
                         .map_err(|e| MindPalaceError::Graph(e.to_string()))?;
 
+                    // Spec 2 access model. Older nodes have no `access` attribute;
+                    // migrate from `visibility` with no increase in openness.
+                    let access = match item.get("access").and_then(|v| v.as_s().ok()) {
+                        Some(s) => serde_json::from_str(s)
+                            .map_err(|e| MindPalaceError::Graph(e.to_string()))?,
+                        None => PageAccess::from_visibility(&visibility),
+                    };
+
                     nodes.push(GraphNodeData {
                         page_id,
                         slug,
                         title,
                         summary,
                         visibility,
+                        access,
                         page_type,
                     });
                 } else if let Some(target_str) = sk.strip_prefix("EDGE#") {
@@ -118,6 +133,8 @@ impl GraphStore for DynamoGraphStore {
             .map_err(|e| MindPalaceError::Graph(e.to_string()))?;
         let page_type_json = serde_json::to_string(&node.page_type)
             .map_err(|e| MindPalaceError::Graph(e.to_string()))?;
+        let access_json = serde_json::to_string(&node.access)
+            .map_err(|e| MindPalaceError::Graph(e.to_string()))?;
 
         self.client
             .put_item()
@@ -128,6 +145,7 @@ impl GraphStore for DynamoGraphStore {
             .item("title", AttributeValue::S(node.title.clone()))
             .item("summary", AttributeValue::S(node.summary.clone()))
             .item("visibility", AttributeValue::S(visibility_json))
+            .item("access", AttributeValue::S(access_json))
             .item("page_type", AttributeValue::S(page_type_json))
             .send()
             .await

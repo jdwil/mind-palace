@@ -2,14 +2,19 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::graph::{GraphNode, KnowledgeGraph, NeighborInfo};
+use super::group::Group;
 use super::lint::{LintIssue, lint_page};
 use super::page::{Page, ReadLevel};
-use super::tenant::TenantContext;
-use super::value_objects::{EdgeKind, PageType, Section, Slug, Visibility};
+use super::tenant::{GroupMembership, TenantContext};
+use super::value_objects::{
+    BaseVisibility, EdgeKind, Grant, GroupId, Level, PageAccess, PageType, Principal, Section,
+    Slug, Visibility,
+};
 use crate::error::MindPalaceError;
 use crate::ports::changelog::{ChangeAction, ChangelogEntry, ChangelogStore};
 use crate::ports::embedding::EmbeddingPort;
 use crate::ports::graph::{GraphEdgeData, GraphNodeData, GraphStore};
+use crate::ports::group_store::GroupStore;
 use crate::ports::page_store::PageStore;
 use crate::ports::vector_search::{EmbeddingMetadata, SearchResult, VectorSearchPort};
 
@@ -21,6 +26,9 @@ pub struct CreatePageInput {
     pub page_type: PageType,
     pub visibility: Visibility,
     pub links: Vec<Slug>,
+    /// Optional explicit access model (Spec 2). When `None`, access is derived
+    /// from `visibility` and the caller's identity (owner = caller).
+    pub base_visibility: Option<BaseVisibility>,
 }
 
 /// Fields set to `None` are left unchanged. Consumers are encouraged to build
@@ -41,6 +49,10 @@ pub struct UpdatePageInput {
 }
 
 #[derive(Debug, Clone)]
+// `Full(Page)` is intentionally the large variant — read_page returns it by
+// value on the hot path and boxing would add an allocation + ripple through all
+// consumers' match arms for no real benefit (PageResponse is short-lived).
+#[allow(clippy::large_enum_variant)]
 pub enum PageResponse {
     Summary {
         title: String,
@@ -62,6 +74,7 @@ pub struct WikiService {
     graph_store: Arc<dyn GraphStore>,
     graph: Arc<RwLock<KnowledgeGraph>>,
     changelog: Option<Arc<dyn ChangelogStore>>,
+    group_store: Option<Arc<dyn GroupStore>>,
 }
 
 impl WikiService {
@@ -79,6 +92,7 @@ impl WikiService {
             graph_store,
             graph,
             changelog: None,
+            group_store: None,
         }
     }
 
@@ -88,18 +102,31 @@ impl WikiService {
         self
     }
 
+    /// Attach a group store enabling group-based grants and group management
+    /// (Spec 2). Without it, group grants resolve to empty membership (only
+    /// owner + direct user grants apply).
+    pub fn with_group_store(mut self, store: Arc<dyn GroupStore>) -> Self {
+        self.group_store = Some(store);
+        self
+    }
+
     pub async fn create_page(
         &self,
         input: CreatePageInput,
         ctx: &TenantContext,
     ) -> Result<(Page, Vec<LintIssue>), MindPalaceError> {
-        let mut page = Page::new(
+        // Resolve the effective access model (Spec 2). The owner is the caller's
+        // authenticated identity (email). base_visibility comes from the explicit
+        // input when provided, else is inferred from the legacy `visibility`.
+        let access = self.access_for_new_page(&input, ctx)?;
+
+        let mut page = Page::new_with_access(
             input.title,
             input.slug,
             input.summary,
             input.sections,
             input.page_type,
-            input.visibility,
+            access,
         )
         .map_err(|e| MindPalaceError::Validation(e.to_string()))?;
         page.links = input.links;
@@ -113,14 +140,7 @@ impl WikiService {
 
         self.reindex_embedding(&page).await;
 
-        let node_data = GraphNodeData {
-            page_id: page.id.clone(),
-            slug: page.slug.clone(),
-            title: page.title.clone(),
-            summary: page.summary.clone(),
-            visibility: page.visibility.clone(),
-            page_type: page.page_type.clone(),
-        };
+        let node_data = self.node_data_for(&page);
         self.graph_store.save_node(&node_data).await?;
 
         {
@@ -131,6 +151,7 @@ impl WikiService {
                 title: page.title.clone(),
                 summary: page.summary.clone(),
                 visibility: page.visibility.clone(),
+                access: page.access.clone(),
                 page_type: page.page_type.clone(),
             });
             for link_slug in &page.links {
@@ -148,15 +169,13 @@ impl WikiService {
             }
         }
 
-        let _ = ctx; // used for future access control
-
         if let Some(ref changelog) = self.changelog {
             let entry = ChangelogEntry {
                 timestamp: chrono::Utc::now(),
                 slug: page.slug.clone(),
                 page_id: page.id.clone(),
                 action: ChangeAction::Created,
-                agent_id: None,
+                agent_id: ctx.user_id().map(|s| s.to_string()),
                 summary: Some(page.summary.clone()),
             };
             changelog.append(&entry).await?;
@@ -171,7 +190,17 @@ impl WikiService {
         input: UpdatePageInput,
         ctx: &TenantContext,
     ) -> Result<(Page, Vec<LintIssue>), MindPalaceError> {
-        let mut page = self.page_store.get_page_by_slug(slug, ctx).await?;
+        let ctx = self.resolve_ctx(ctx).await;
+        let mut page = self.page_store.get_page_by_slug(slug, &ctx).await?;
+
+        // Spec 2 §3: content mutation requires edit access. The untenanted Global
+        // admin and the page owner always pass; grantees need Level::Edit.
+        if !ctx.can_edit_page(&page.access) {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "no edit permission for page '{}'",
+                slug.as_str()
+            )));
+        }
 
         if let Some(title) = input.title {
             page.title = title;
@@ -223,14 +252,7 @@ impl WikiService {
         self.reindex_embedding(&page).await;
 
         // Update graph node
-        let node_data = GraphNodeData {
-            page_id: page.id.clone(),
-            slug: page.slug.clone(),
-            title: page.title.clone(),
-            summary: page.summary.clone(),
-            visibility: page.visibility.clone(),
-            page_type: page.page_type.clone(),
-        };
+        let node_data = self.node_data_for(&page);
         self.graph_store.save_node(&node_data).await?;
 
         // Rebuild graph edges from the (possibly updated) links.
@@ -238,6 +260,14 @@ impl WikiService {
         // leaving the graph disconnected after link changes.
         {
             let mut g = self.graph.write().await;
+            // Refresh in-memory node metadata (title/summary/access) so filtering
+            // and traversal reflect the update without a full graph reload.
+            if let Some(node) = g.get_node_mut(&page.id) {
+                node.title = page.title.clone();
+                node.summary = page.summary.clone();
+                node.visibility = page.visibility.clone();
+                node.access = page.access.clone();
+            }
             for link_slug in &page.links {
                 if let Some(tid) = self.find_page_id_by_slug(&g, link_slug) {
                     let edge = GraphEdgeData {
@@ -257,7 +287,7 @@ impl WikiService {
                 slug: page.slug.clone(),
                 page_id: page.id.clone(),
                 action: ChangeAction::Updated,
-                agent_id: None,
+                agent_id: ctx.user_id().map(|s| s.to_string()),
                 summary: Some(page.summary.clone()),
             };
             changelog.append(&entry).await?;
@@ -272,7 +302,15 @@ impl WikiService {
         level: ReadLevel,
         ctx: &TenantContext,
     ) -> Result<PageResponse, MindPalaceError> {
-        let page = self.page_store.get_page_by_slug(slug, ctx).await?;
+        let ctx = self.resolve_ctx(ctx).await;
+        // Load without relying on the storage partition as the security boundary,
+        // then enforce the authoritative access model (Spec 2 §3). This lets a
+        // grantee read an owner's Private page even though it physically lives in
+        // the owner's partition. Anonymous/non-grantee callers get PageNotFound.
+        let page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
+        if page.visibility == Visibility::Archived || !ctx.can_see_page(&page.access) {
+            return Err(MindPalaceError::PageNotFound(slug.as_str().to_string()));
+        }
         match level {
             ReadLevel::Summary => Ok(PageResponse::Summary {
                 title: page.title,
@@ -299,8 +337,27 @@ impl WikiService {
         ctx: &TenantContext,
         limit: usize,
     ) -> Result<Vec<SearchResult>, MindPalaceError> {
+        let ctx = self.resolve_ctx(ctx).await;
         let embedding = self.embedding.embed_text(query).await?;
-        self.vector_search.search(&embedding, limit, ctx).await
+        // Over-fetch, then re-filter by the authoritative access model against
+        // the in-memory graph (which carries owner/grants). The vector store's
+        // partition filter is a coarse pre-filter only.
+        let raw = self
+            .vector_search
+            .search(&embedding, limit.max(limit * 2), &ctx)
+            .await?;
+        let g = self.graph.read().await;
+        let filtered: Vec<SearchResult> = raw
+            .into_iter()
+            .filter(|r| match g.get_node(&r.page_id) {
+                Some(node) => ctx.can_see_page(&node.access),
+                // Node not in graph yet (eventual consistency): fall back to the
+                // vector-store partition decision already applied.
+                None => true,
+            })
+            .take(limit)
+            .collect();
+        Ok(filtered)
     }
 
     pub async fn traverse(
@@ -309,9 +366,13 @@ impl WikiService {
         depth: usize,
         ctx: &TenantContext,
     ) -> Result<Vec<NeighborInfo>, MindPalaceError> {
-        let page = self.page_store.get_page_by_slug(slug, ctx).await?;
+        let ctx = self.resolve_ctx(ctx).await;
+        let page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
+        if page.visibility == Visibility::Archived || !ctx.can_see_page(&page.access) {
+            return Err(MindPalaceError::PageNotFound(slug.as_str().to_string()));
+        }
         let g = self.graph.read().await;
-        Ok(g.get_subtree(&page.id, depth, ctx))
+        Ok(g.get_subtree(&page.id, depth, &ctx))
     }
 
     pub async fn list_pages(
@@ -319,6 +380,7 @@ impl WikiService {
         filter: &crate::ports::page_store::PageFilter,
         ctx: &TenantContext,
     ) -> Result<Vec<Page>, MindPalaceError> {
+        let ctx = self.resolve_ctx(ctx).await;
         // Reload the graph from the store so long-lived servers (remote MCP) see
         // pages created after startup. Without this, list silently omits pages
         // created by other clients since the process started. Only replace the
@@ -339,7 +401,7 @@ impl WikiService {
         // conclude pages didn't exist.
         let limit = filter.limit.unwrap_or(usize::MAX);
         let pages: Vec<Page> = g
-            .all_nodes(ctx)
+            .all_nodes(&ctx)
             .into_iter()
             .filter(|node| {
                 filter
@@ -357,6 +419,7 @@ impl WikiService {
                 sections: vec![],
                 page_type: node.page_type.clone(),
                 visibility: node.visibility.clone(),
+                access: node.access.clone(),
                 confidence: super::value_objects::Confidence::default(),
                 version: 0,
                 created_at: chrono::Utc::now(),
@@ -372,7 +435,14 @@ impl WikiService {
         slug: &Slug,
         ctx: &TenantContext,
     ) -> Result<(), MindPalaceError> {
-        let page = self.page_store.get_page_by_slug(slug, ctx).await?;
+        let ctx = self.resolve_ctx(ctx).await;
+        let page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
+        if !ctx.can_edit_page(&page.access) {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "no edit permission to delete page '{}'",
+                slug.as_str()
+            )));
+        }
         self.page_store.delete_page(&page.id).await?;
         self.vector_search.delete_embedding(&page.id).await?;
         self.graph_store.delete_node(&page.id).await?;
@@ -385,7 +455,7 @@ impl WikiService {
                 slug: page.slug.clone(),
                 page_id: page.id.clone(),
                 action: ChangeAction::Deleted,
-                agent_id: None,
+                agent_id: ctx.user_id().map(|s| s.to_string()),
                 summary: None,
             };
             changelog.append(&entry).await?;
@@ -399,7 +469,15 @@ impl WikiService {
         slug: &Slug,
         ctx: &TenantContext,
     ) -> Result<(), MindPalaceError> {
-        let mut page = self.page_store.get_page_by_slug(slug, ctx).await?;
+        let ctx = self.resolve_ctx(ctx).await;
+        let mut page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
+        // Spec 2 §3: archive is an edit-class mutation gated by can_edit.
+        if !ctx.can_edit_page(&page.access) {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "no edit permission to archive page '{}'",
+                slug.as_str()
+            )));
+        }
         page.visibility = Visibility::Archived;
         page.version += 1;
         page.updated_at = chrono::Utc::now();
@@ -408,23 +486,24 @@ impl WikiService {
         // Remove from vector search (won't appear in semantic search)
         self.vector_search.delete_embedding(&page.id).await?;
 
-        // Update graph node visibility so it's filtered from traversal/list
+        // Update graph node visibility so it's filtered from traversal/list.
+        // Access is preserved so unarchive can restore correct grants.
         let node_data = crate::ports::graph::GraphNodeData {
             page_id: page.id.clone(),
             slug: page.slug.clone(),
             title: page.title.clone(),
             summary: page.summary.clone(),
             visibility: Visibility::Archived,
+            access: page.access.clone(),
             page_type: page.page_type.clone(),
         };
         self.graph_store.save_node(&node_data).await?;
 
-        // Update in-memory graph
+        // Update in-memory graph — remove the node so archived pages are hidden
+        // from access-based traversal/list (they no longer match any grant).
         {
             let mut g = self.graph.write().await;
-            if let Some(node) = g.get_node_mut(&page.id) {
-                node.visibility = Visibility::Archived;
-            }
+            g.remove_node(&page.id);
         }
 
         if let Some(ref changelog) = self.changelog {
@@ -433,7 +512,7 @@ impl WikiService {
                 slug: page.slug.clone(),
                 page_id: page.id.clone(),
                 action: ChangeAction::Updated,
-                agent_id: None,
+                agent_id: ctx.user_id().map(|s| s.to_string()),
                 summary: Some("Archived".to_string()),
             };
             changelog.append(&entry).await?;
@@ -447,7 +526,9 @@ impl WikiService {
         // by can_see. Use get_page_by_slug_unfiltered which reads without
         // visibility filtering.
         let mut page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
-        page.visibility = Visibility::General;
+        // Restore the storage partition from the preserved access model rather
+        // than forcing General — a Private page must stay private after restore.
+        page.visibility = Visibility::from_access(&page.access);
         page.version += 1;
         page.updated_at = chrono::Utc::now();
         self.page_store.save_page(&page).await?;
@@ -466,21 +547,25 @@ impl WikiService {
             .await?;
 
         // Update graph node
-        let node_data = crate::ports::graph::GraphNodeData {
-            page_id: page.id.clone(),
-            slug: page.slug.clone(),
-            title: page.title.clone(),
-            summary: page.summary.clone(),
-            visibility: Visibility::General,
-            page_type: page.page_type.clone(),
-        };
+        let node_data = self.node_data_for(&page);
         self.graph_store.save_node(&node_data).await?;
 
-        // Update in-memory graph
+        // Re-add to the in-memory graph (archive removed it).
         {
             let mut g = self.graph.write().await;
             if let Some(node) = g.get_node_mut(&page.id) {
-                node.visibility = Visibility::General;
+                node.visibility = page.visibility.clone();
+                node.access = page.access.clone();
+            } else {
+                g.add_node(GraphNode {
+                    page_id: page.id.clone(),
+                    slug: page.slug.clone(),
+                    title: page.title.clone(),
+                    summary: page.summary.clone(),
+                    visibility: page.visibility.clone(),
+                    access: page.access.clone(),
+                    page_type: page.page_type.clone(),
+                });
             }
         }
 
@@ -506,6 +591,283 @@ impl WikiService {
     ) -> Option<super::value_objects::PageId> {
         let ctx = TenantContext::global();
         graph.find_by_slug(slug, &ctx).map(|n| n.page_id.clone())
+    }
+
+    /// Build the effective [`PageAccess`] for a newly created page (Spec 2 §4).
+    ///
+    /// - owner = the caller's authenticated identity (email). Anonymous callers
+    ///   are denied creation of non-Public pages (and by default cannot create).
+    /// - base_visibility comes from explicit input, else inferred from the
+    ///   legacy `visibility` (General → Public, otherwise Private).
+    /// - a self grant + tenant/group grants are derived from the legacy
+    ///   visibility to preserve existing behavior.
+    fn access_for_new_page(
+        &self,
+        input: &CreatePageInput,
+        ctx: &TenantContext,
+    ) -> Result<PageAccess, MindPalaceError> {
+        // Start from the migration mapping of the legacy visibility so tenant/user
+        // scoping is preserved, then layer owner + explicit base_visibility.
+        let mut access = PageAccess::from_visibility(&input.visibility);
+
+        // Owner is the caller when authenticated.
+        if let Some(email) = ctx.user_id() {
+            access.owner = Some(email.to_string());
+            // Ensure the owner has an explicit self grant for clarity/portability.
+            if !access
+                .grants
+                .iter()
+                .any(|g| g.principal == Principal::User(email.to_string()))
+            {
+                access.grants.push(Grant {
+                    principal: Principal::User(email.to_string()),
+                    level: Level::Edit,
+                });
+            }
+        }
+
+        // Explicit base_visibility overrides the inferred one.
+        if let Some(bv) = input.base_visibility {
+            access.base_visibility = bv;
+        }
+
+        // Anonymous callers may only create Public pages (Spec 2 §4). The default
+        // deployment denies anonymous creation entirely; the MCP layer enforces
+        // the deny, and here we defensively reject a non-Public anonymous create.
+        if ctx.identity.is_anonymous() && access.base_visibility != BaseVisibility::Public {
+            return Err(MindPalaceError::AccessDenied(
+                "anonymous callers may only create Public pages".into(),
+            ));
+        }
+
+        Ok(access)
+    }
+
+    /// Assemble graph node data (with access) from a page.
+    fn node_data_for(&self, page: &Page) -> GraphNodeData {
+        GraphNodeData {
+            page_id: page.id.clone(),
+            slug: page.slug.clone(),
+            title: page.title.clone(),
+            summary: page.summary.clone(),
+            visibility: page.visibility.clone(),
+            access: page.access.clone(),
+            page_type: page.page_type.clone(),
+        }
+    }
+
+    /// Resolve the group membership for the context's identity and return a
+    /// context carrying it (Spec 2 §3.3 — resolved once, cached per request).
+    /// A no-op (empty membership) when no group store is configured or the
+    /// identity is not an authenticated user.
+    async fn resolve_ctx(&self, ctx: &TenantContext) -> TenantContext {
+        let membership = self.resolve_membership(ctx).await;
+        ctx.clone().with_membership(membership)
+    }
+
+    async fn resolve_membership(&self, ctx: &TenantContext) -> GroupMembership {
+        let Some(store) = &self.group_store else {
+            return GroupMembership::empty();
+        };
+        let Some(email) = ctx.user_id() else {
+            return GroupMembership::empty();
+        };
+        match store.list_groups().await {
+            Ok(groups) => GroupMembership::new(
+                groups
+                    .into_iter()
+                    .filter(|g| g.is_member(email))
+                    .map(|g| g.id)
+                    .collect(),
+            ),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to resolve group membership; treating as none");
+                GroupMembership::empty()
+            }
+        }
+    }
+
+    /// Add a grant to a page (Spec 2 §4 `wiki_share`). Privileged: only the page
+    /// owner (or untenanted Global admin) may change grants (§5), which blocks
+    /// the Outline-class escalation where a writer grants themselves access.
+    pub async fn share_page(
+        &self,
+        slug: &Slug,
+        principal: Principal,
+        level: Level,
+        ctx: &TenantContext,
+    ) -> Result<(), MindPalaceError> {
+        let ctx = self.resolve_ctx(ctx).await;
+        let mut page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
+        if !ctx.can_manage_grants(&page.access) {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "only the owner may change grants for page '{}'",
+                slug.as_str()
+            )));
+        }
+        // Upsert the grant: if the principal already has a grant, raise the level.
+        if let Some(existing) = page
+            .access
+            .grants
+            .iter_mut()
+            .find(|g| g.principal == principal)
+        {
+            existing.level = existing.level.max(level);
+        } else {
+            page.access.grants.push(Grant { principal, level });
+        }
+        self.persist_access_change(&mut page, &ctx, "Shared").await
+    }
+
+    /// Remove a grant from a page (Spec 2 §4 `wiki_unshare`). Owner-only (§5).
+    pub async fn unshare_page(
+        &self,
+        slug: &Slug,
+        principal: &Principal,
+        ctx: &TenantContext,
+    ) -> Result<(), MindPalaceError> {
+        let ctx = self.resolve_ctx(ctx).await;
+        let mut page = self.page_store.get_page_by_slug_unfiltered(slug).await?;
+        if !ctx.can_manage_grants(&page.access) {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "only the owner may change grants for page '{}'",
+                slug.as_str()
+            )));
+        }
+        page.access.grants.retain(|g| &g.principal != principal);
+        self.persist_access_change(&mut page, &ctx, "Unshared").await
+    }
+
+    /// Persist an access change (share/unshare): bump version, save page, refresh
+    /// the graph node's access, re-index the partition, record a changelog entry.
+    async fn persist_access_change(
+        &self,
+        page: &mut Page,
+        ctx: &TenantContext,
+        action: &str,
+    ) -> Result<(), MindPalaceError> {
+        page.version += 1;
+        page.updated_at = chrono::Utc::now();
+        // Partition may shift (e.g. owner set) — recompute from access.
+        page.visibility = Visibility::from_access(&page.access);
+        self.page_store.save_page(page).await?;
+
+        let node_data = self.node_data_for(page);
+        self.graph_store.save_node(&node_data).await?;
+        {
+            let mut g = self.graph.write().await;
+            if let Some(node) = g.get_node_mut(&page.id) {
+                node.visibility = page.visibility.clone();
+                node.access = page.access.clone();
+            }
+        }
+
+        if let Some(ref changelog) = self.changelog {
+            let entry = ChangelogEntry {
+                timestamp: chrono::Utc::now(),
+                slug: page.slug.clone(),
+                page_id: page.id.clone(),
+                action: ChangeAction::Updated,
+                agent_id: ctx.user_id().map(|s| s.to_string()),
+                summary: Some(action.to_string()),
+            };
+            changelog.append(&entry).await?;
+        }
+        Ok(())
+    }
+
+    fn require_group_store(&self) -> Result<&Arc<dyn GroupStore>, MindPalaceError> {
+        self.group_store
+            .as_ref()
+            .ok_or_else(|| MindPalaceError::Validation("no group store configured".into()))
+    }
+
+    /// Create a group (Spec 2 §4/§5). The caller becomes the sole initial
+    /// manager and member. Anonymous callers cannot create groups.
+    pub async fn group_create(
+        &self,
+        id: GroupId,
+        name: &str,
+        ctx: &TenantContext,
+    ) -> Result<Group, MindPalaceError> {
+        let store = self.require_group_store()?;
+        let creator = ctx.user_id().ok_or_else(|| {
+            MindPalaceError::AccessDenied("must be authenticated to create a group".into())
+        })?;
+        if store.get_group(&id).await?.is_some() {
+            return Err(MindPalaceError::Validation(format!(
+                "group '{}' already exists",
+                id.as_str()
+            )));
+        }
+        let group = Group::new(id, name, creator);
+        store.save_group(&group).await?;
+        Ok(group)
+    }
+
+    /// Add a member to a group (Spec 2 §5). Privileged: the caller MUST be a
+    /// manager of the group. A regular member cannot add members — this blocks
+    /// self-service escalation.
+    pub async fn group_add_member(
+        &self,
+        id: &GroupId,
+        member_email: &str,
+        ctx: &TenantContext,
+    ) -> Result<Group, MindPalaceError> {
+        let store = self.require_group_store()?;
+        let caller = ctx.user_id();
+        let mut group = store
+            .get_group(id)
+            .await?
+            .ok_or_else(|| MindPalaceError::PageNotFound(format!("group: {}", id.as_str())))?;
+        if !self.caller_is_manager(&group, caller, ctx) {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "only a manager may add members to group '{}'",
+                id.as_str()
+            )));
+        }
+        group.add_member(member_email);
+        store.save_group(&group).await?;
+        Ok(group)
+    }
+
+    /// Remove a member from a group (Spec 2 §5). Manager-only.
+    pub async fn group_remove_member(
+        &self,
+        id: &GroupId,
+        member_email: &str,
+        ctx: &TenantContext,
+    ) -> Result<Group, MindPalaceError> {
+        let store = self.require_group_store()?;
+        let caller = ctx.user_id();
+        let mut group = store
+            .get_group(id)
+            .await?
+            .ok_or_else(|| MindPalaceError::PageNotFound(format!("group: {}", id.as_str())))?;
+        if !self.caller_is_manager(&group, caller, ctx) {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "only a manager may remove members from group '{}'",
+                id.as_str()
+            )));
+        }
+        group.remove_member(member_email);
+        store.save_group(&group).await?;
+        Ok(group)
+    }
+
+    /// List all groups (Spec 2 §4 `wiki_group_list`).
+    pub async fn group_list(&self, _ctx: &TenantContext) -> Result<Vec<Group>, MindPalaceError> {
+        let store = self.require_group_store()?;
+        store.list_groups().await
+    }
+
+    /// A caller may manage a group's membership if they are a manager of it, or
+    /// are the untenanted Global admin.
+    fn caller_is_manager(&self, group: &Group, caller: Option<&str>, ctx: &TenantContext) -> bool {
+        if ctx.tenant_id.is_none() && ctx.identity.is_global() {
+            return true;
+        }
+        matches!(caller, Some(email) if group.is_manager(email))
     }
 
     /// Best-effort embedding + vector upsert. The page is already durably saved
@@ -710,6 +1072,7 @@ mod tests {
             page_type: PageType::Concept,
             visibility: Visibility::General,
             links: vec![],
+            base_visibility: None,
         }
     }
 

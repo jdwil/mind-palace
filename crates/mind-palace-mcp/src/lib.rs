@@ -5,7 +5,9 @@ use mind_palace_core::domain::service::{
     CreatePageInput, PageResponse, UpdatePageInput, WikiService,
 };
 use mind_palace_core::domain::tenant::{Identity, TenantContext};
-use mind_palace_core::domain::value_objects::{PageType, Section, Slug, Visibility};
+use mind_palace_core::domain::value_objects::{
+    BaseVisibility, GroupId, Level, PageType, Principal, Section, Slug, Visibility,
+};
 use mind_palace_core::ports::page_store::PageFilter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Extensions, ServerCapabilities, ServerInfo};
@@ -192,6 +194,10 @@ pub struct CreateParams {
         description = "Page visibility: 'general' (default, everyone sees it) or 'user' (only the current user sees it). Use 'user' only for personal preferences, context, or opinions that should not apply to other users."
     )]
     pub visibility: Option<String>,
+    #[schemars(
+        description = "Spec 2 base visibility: 'public' (open to everyone incl. anonymous) or 'private' (owner + explicit grants only). If omitted, inferred from `visibility`. Owner is set to the caller."
+    )]
+    pub base_visibility: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -227,6 +233,46 @@ pub struct ListParams {
 pub struct ArchiveParams {
     #[schemars(description = "Page slug to archive or unarchive")]
     pub slug: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ShareParams {
+    #[schemars(description = "Page slug to share")]
+    pub slug: String,
+    #[schemars(
+        description = "Grantee kind: 'user' (an email) or 'group' (a group id). Determines how `principal` is interpreted."
+    )]
+    pub principal_type: String,
+    #[schemars(description = "The grantee: an email (principal_type=user) or group id (principal_type=group)")]
+    pub principal: String,
+    #[schemars(description = "Permission level: 'view' or 'edit' (default 'view')")]
+    pub level: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UnshareParams {
+    #[schemars(description = "Page slug to unshare")]
+    pub slug: String,
+    #[schemars(description = "Grantee kind: 'user' or 'group'")]
+    pub principal_type: String,
+    #[schemars(description = "The grantee: an email (user) or group id (group)")]
+    pub principal: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GroupCreateParams {
+    #[schemars(description = "Group id (a stable slug-like key, e.g. 'eng-team')")]
+    pub id: String,
+    #[schemars(description = "Human-readable group name")]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GroupMemberParams {
+    #[schemars(description = "Group id")]
+    pub id: String,
+    #[schemars(description = "Member email to add or remove")]
+    pub member: String,
 }
 
 // --- Tool router ---
@@ -385,6 +431,13 @@ impl MindPalaceMcpServer {
         ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
         let ctx = self.ctx_for(&ext);
+        // Spec 2 §4: anonymous callers cannot create pages by default.
+        if ctx.identity.is_anonymous() {
+            return Err(McpError::internal_error(
+                "anonymous callers may not create pages".to_string(),
+                None,
+            ));
+        }
         let slug =
             Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let sections = params
@@ -401,17 +454,29 @@ impl MindPalaceMcpServer {
             .into_iter()
             .filter_map(|s| Slug::new(&s).ok())
             .collect();
+        // Map the legacy `visibility` param + Spec 2 `base_visibility`:
+        // - "user"/"private" → Private (owner-only + grants).
+        // - "public"/"general"/default → Public.
+        let (visibility, base_visibility) = match params
+            .visibility
+            .as_deref()
+            .or(params.base_visibility.as_deref())
+        {
+            Some("user") | Some("private") => (
+                Visibility::User(ctx.user_id().unwrap_or("unknown").to_string()),
+                Some(BaseVisibility::Private),
+            ),
+            _ => (Visibility::General, Some(BaseVisibility::Public)),
+        };
         let input = CreatePageInput {
             title: params.title,
             slug,
             summary: params.summary,
             sections,
             page_type: parse_page_type(&params.page_type),
-            visibility: match params.visibility.as_deref() {
-                Some("user") => Visibility::User(ctx.user_id().unwrap_or("unknown").to_string()),
-                _ => Visibility::General,
-            },
+            visibility,
             links,
+            base_visibility,
         };
         let (page, issues) = self
             .service
@@ -550,6 +615,130 @@ impl MindPalaceMcpServer {
             Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![content]))
     }
+
+    #[tool(
+        description = "Share a page: grant a user (email) or group access at a level (view/edit). Only the page owner may change grants."
+    )]
+    async fn wiki_share(
+        &self,
+        Parameters(params): Parameters<ShareParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let slug =
+            Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let principal = parse_principal(&params.principal_type, &params.principal)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        let level = match params.level.as_deref() {
+            Some("edit") => Level::Edit,
+            _ => Level::View,
+        };
+        self.service
+            .share_page(&slug, principal, level, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = serde_json::json!({ "slug": params.slug, "shared": true });
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Unshare a page: remove a user or group grant. Only the page owner may change grants."
+    )]
+    async fn wiki_unshare(
+        &self,
+        Parameters(params): Parameters<UnshareParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let slug =
+            Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let principal = parse_principal(&params.principal_type, &params.principal)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        self.service
+            .unshare_page(&slug, &principal, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = serde_json::json!({ "slug": params.slug, "unshared": true });
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Create a group. The caller becomes the sole initial manager and member. Members inherit any grant made to the group."
+    )]
+    async fn wiki_group_create(
+        &self,
+        Parameters(params): Parameters<GroupCreateParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let group = self
+            .service
+            .group_create(GroupId::new(params.id), &params.name, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = group_to_json(&group);
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Add a member to a group. Requires the caller to be a manager of the group (privileged operation)."
+    )]
+    async fn wiki_group_add_member(
+        &self,
+        Parameters(params): Parameters<GroupMemberParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let group = self
+            .service
+            .group_add_member(&GroupId::new(params.id), &params.member, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = group_to_json(&group);
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Remove a member from a group. Requires the caller to be a manager of the group (privileged operation)."
+    )]
+    async fn wiki_group_remove_member(
+        &self,
+        Parameters(params): Parameters<GroupMemberParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let group = self
+            .service
+            .group_remove_member(&GroupId::new(params.id), &params.member, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = group_to_json(&group);
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(description = "List all groups with their members and managers.")]
+    async fn wiki_group_list(&self, ext: Extensions) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let groups = self
+            .service
+            .group_list(&ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output: Vec<serde_json::Value> = groups.iter().map(group_to_json).collect();
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
 }
 
 // --- ServerHandler ---
@@ -590,6 +779,25 @@ fn parse_page_type(s: &str) -> PageType {
         "Skill" => PageType::Skill,
         _ => PageType::Leaf,
     }
+}
+
+fn parse_principal(kind: &str, value: &str) -> Result<Principal, String> {
+    match kind {
+        "user" => Ok(Principal::User(value.to_string())),
+        "group" => Ok(Principal::Group(GroupId::new(value.to_string()))),
+        other => Err(format!(
+            "invalid principal_type '{other}' (expected 'user' or 'group')"
+        )),
+    }
+}
+
+fn group_to_json(group: &mind_palace_core::domain::group::Group) -> serde_json::Value {
+    serde_json::json!({
+        "id": group.id.as_str(),
+        "name": group.name,
+        "members": group.members,
+        "managers": group.managers,
+    })
 }
 
 fn page_response_to_value(resp: &PageResponse) -> serde_json::Value {

@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 page_type: PageType::Concept,
                 visibility: Visibility::General,
                 links: vec![],
+                base_visibility: None,
             },
             &ctx,
         )

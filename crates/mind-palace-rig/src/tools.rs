@@ -284,6 +284,7 @@ impl Tool for WikiCreateTool {
                 _ => Visibility::General,
             },
             links,
+            base_visibility: None,
         };
         let (page, issues) = self.service.create_page(input, &self.ctx).await?;
         Ok(WikiCreateOutput {

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::value_objects::{
-    Confidence, PageId, PageType, Section, Slug, TableOfContents, Visibility,
+    Confidence, PageAccess, PageId, PageType, Section, Slug, TableOfContents, Visibility,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,7 +14,12 @@ pub struct Page {
     pub toc: TableOfContents,
     pub sections: Vec<Section>,
     pub page_type: PageType,
+    /// STORAGE-level partition (see [`Visibility`]). Derived from `access` on
+    /// save; kept in sync so physical partitioning and legacy filtering work.
     pub visibility: Visibility,
+    /// Authoritative access model (Spec 2): owner + base_visibility + grants.
+    #[serde(default)]
+    pub access: PageAccess,
     pub confidence: Confidence,
     pub version: u32,
     pub created_at: DateTime<Utc>,
@@ -41,6 +46,22 @@ impl Page {
         page_type: PageType,
         visibility: Visibility,
     ) -> Result<Self, PageValidationError> {
+        // Legacy constructor: derive the Spec 2 access model from the passed
+        // storage visibility so old callers keep working with migrated semantics.
+        let access = PageAccess::from_visibility(&visibility);
+        Self::new_with_access(title, slug, summary, sections, page_type, access)
+    }
+
+    /// Create a page with an explicit [`PageAccess`] (Spec 2). The storage-level
+    /// `visibility` partition is derived from `access`.
+    pub fn new_with_access(
+        title: String,
+        slug: Slug,
+        summary: String,
+        sections: Vec<Section>,
+        page_type: PageType,
+        access: PageAccess,
+    ) -> Result<Self, PageValidationError> {
         if title.is_empty() {
             return Err(PageValidationError::MissingTitle);
         }
@@ -53,6 +74,7 @@ impl Page {
 
         let toc = TableOfContents::from_sections(&sections);
         let now = Utc::now();
+        let visibility = Visibility::from_access(&access);
 
         Ok(Self {
             id: PageId::new(),
@@ -63,6 +85,7 @@ impl Page {
             sections,
             page_type,
             visibility,
+            access,
             confidence: Confidence::default(),
             version: 1,
             created_at: now,

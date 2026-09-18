@@ -9,10 +9,12 @@ use mind_palace_core::domain::service::WikiService;
 use mind_palace_core::domain::tenant::TenantContext;
 use mind_palace_core::ports::embedding::EmbeddingPort;
 use mind_palace_core::ports::graph::GraphStore;
+use mind_palace_core::ports::group_store::GroupStore;
 use mind_palace_core::ports::page_store::PageStore;
 use mind_palace_core::ports::vector_search::VectorSearchPort;
 use mind_palace_infra::bedrock_embedding::{BedrockEmbedding, BedrockEmbeddingConfig};
 use mind_palace_infra::dynamo_graph_store::{DynamoGraphStore, DynamoGraphStoreConfig};
+use mind_palace_infra::dynamo_group_store::{DynamoGroupStore, DynamoGroupStoreConfig};
 use mind_palace_infra::s3_page_store::{S3PageStore, S3PageStoreConfig};
 use mind_palace_infra::s3vectors_search::{S3VectorsSearch, S3VectorsSearchConfig};
 use tokio::sync::RwLock;
@@ -47,6 +49,12 @@ pub async fn build_service_from_env() -> Result<Arc<WikiService>, Box<dyn std::e
     let graph_store: Arc<dyn GraphStore> = Arc::new(DynamoGraphStore::new(
         aws_sdk_dynamodb::Client::new(&aws_cfg),
         DynamoGraphStoreConfig {
+            table_name: dynamo_table.clone(),
+        },
+    ));
+    let group_store: Arc<dyn GroupStore> = Arc::new(DynamoGroupStore::new(
+        aws_sdk_dynamodb::Client::new(&aws_cfg),
+        DynamoGroupStoreConfig {
             table_name: dynamo_table,
         },
     ));
@@ -78,13 +86,10 @@ pub async fn build_service_from_env() -> Result<Arc<WikiService>, Box<dyn std::e
         Arc::new(RwLock::new(KnowledgeGraph::from_data(data)))
     };
 
-    Ok(Arc::new(WikiService::new(
-        page_store,
-        vector_search,
-        embedding,
-        graph_store,
-        graph,
-    )))
+    Ok(Arc::new(
+        WikiService::new(page_store, vector_search, embedding, graph_store, graph)
+            .with_group_store(group_store),
+    ))
 }
 
 /// Build the tenant context for the local stdio binary from

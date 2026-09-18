@@ -1,4 +1,5 @@
 pub mod graph;
+pub mod group;
 pub mod lint;
 pub mod page;
 pub mod service;
