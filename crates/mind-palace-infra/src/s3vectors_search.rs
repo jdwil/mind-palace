@@ -98,7 +98,7 @@ impl VectorSearchPort for S3VectorsSearch {
                 .map(|t| Document::String(t.0.clone()))
                 .chain(std::iter::once(Document::String("general".to_string())))
                 .collect();
-            if let Some(uid) = &ctx.user_id {
+            if let Some(uid) = ctx.user_id() {
                 visible.push(Document::String(format!("user-{uid}")));
             }
             let filter = Document::Object(

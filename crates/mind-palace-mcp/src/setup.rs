@@ -87,10 +87,20 @@ pub async fn build_service_from_env() -> Result<Arc<WikiService>, Box<dyn std::e
     )))
 }
 
-/// Build the tenant context from `MIND_PALACE_USER_ID` (optional).
+/// Build the tenant context for the local stdio binary from
+/// `MIND_PALACE_USER_ID` (optional).
+///
+/// Backward-compatibility (Spec 1, acceptance criterion 7): the stdio binary's
+/// behavior for existing single-user use is unchanged. With no
+/// `MIND_PALACE_USER_ID`, the context is `global()` — the trusted, everything-
+/// visible local/admin identity. When `MIND_PALACE_USER_ID` is set, it becomes
+/// an `Identity::User`, enabling user-scoped pages. The anonymous-sees-only-
+/// public rule from Spec 1 applies to the *remote* transport, not stdio.
 pub fn build_context_from_env() -> TenantContext {
     let mut ctx = TenantContext::global();
-    if let Ok(user_id) = std::env::var("MIND_PALACE_USER_ID") {
+    if let Ok(user_id) = std::env::var("MIND_PALACE_USER_ID")
+        && !user_id.trim().is_empty()
+    {
         ctx = ctx.with_user(user_id);
     }
     ctx

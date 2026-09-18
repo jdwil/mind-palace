@@ -4,14 +4,15 @@ use mind_palace_core::domain::page::ReadLevel;
 use mind_palace_core::domain::service::{
     CreatePageInput, PageResponse, UpdatePageInput, WikiService,
 };
-use mind_palace_core::domain::tenant::TenantContext;
+use mind_palace_core::domain::tenant::{Identity, TenantContext};
 use mind_palace_core::domain::value_objects::{PageType, Section, Slug, Visibility};
 use mind_palace_core::ports::page_store::PageFilter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, Content, Extensions, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 
+pub mod auth;
 pub mod setup;
 
 /// Returned in the MCP `initialize` response `instructions` field. Clients that
@@ -240,6 +241,22 @@ impl MindPalaceMcpServer {
         }
     }
 
+    /// Resolve the effective [`TenantContext`] for a single request.
+    ///
+    /// The remote HTTP transport's auth middleware validates the request and
+    /// inserts an [`Identity`] into the axum request extensions. rmcp threads
+    /// the raw `http::request::Parts` into the MCP request [`Extensions`], so we
+    /// read the identity per request here. When no per-request identity is
+    /// present (e.g. the local stdio binary, which has no HTTP parts), we fall
+    /// back to the server's base context built from env config — keeping the
+    /// single-user stdio experience unchanged.
+    fn ctx_for(&self, ext: &Extensions) -> TenantContext {
+        ext.get::<axum::http::request::Parts>()
+            .and_then(|parts| parts.extensions.get::<Identity>())
+            .map(|id| TenantContext::from_identity(id.clone()))
+            .unwrap_or_else(|| self.ctx.clone())
+    }
+
     #[tool(
         description = "Read this FIRST, before using any other wiki tool. Returns the operating manual for the Mind Palace knowledge base: when to search, when to write, page types, structure rules, and visibility. Call this at the start of your work."
     )]
@@ -253,11 +270,13 @@ impl MindPalaceMcpServer {
     async fn wiki_search(
         &self,
         Parameters(params): Parameters<SearchParams>,
+        ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
         let limit = params.limit.unwrap_or(5);
         let results = self
             .service
-            .search(&params.query, &self.ctx, limit)
+            .search(&params.query, &ctx, limit)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -284,7 +303,9 @@ impl MindPalaceMcpServer {
     async fn wiki_read(
         &self,
         Parameters(params): Parameters<ReadParams>,
+        ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
         let slug =
             Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let level = match params.level.as_deref().unwrap_or("summary") {
@@ -297,7 +318,7 @@ impl MindPalaceMcpServer {
             }
             _ => ReadLevel::Summary,
         };
-        let resp = match self.service.read_page(&slug, level, &self.ctx).await {
+        let resp = match self.service.read_page(&slug, level, &ctx).await {
             Ok(r) => r,
             Err(mind_palace_core::error::MindPalaceError::PageNotFound(_)) => {
                 // Either the page doesn't exist or it's scoped to another user
@@ -327,13 +348,15 @@ impl MindPalaceMcpServer {
     async fn wiki_traverse(
         &self,
         Parameters(params): Parameters<TraverseParams>,
+        ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
         let slug =
             Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let depth = params.depth.unwrap_or(2);
         let neighbors = self
             .service
-            .traverse(&slug, depth, &self.ctx)
+            .traverse(&slug, depth, &ctx)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -359,7 +382,9 @@ impl MindPalaceMcpServer {
     async fn wiki_create(
         &self,
         Parameters(params): Parameters<CreateParams>,
+        ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
         let slug =
             Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let sections = params
@@ -383,16 +408,14 @@ impl MindPalaceMcpServer {
             sections,
             page_type: parse_page_type(&params.page_type),
             visibility: match params.visibility.as_deref() {
-                Some("user") => {
-                    Visibility::User(self.ctx.user_id().unwrap_or("unknown").to_string())
-                }
+                Some("user") => Visibility::User(ctx.user_id().unwrap_or("unknown").to_string()),
                 _ => Visibility::General,
             },
             links,
         };
         let (page, issues) = self
             .service
-            .create_page(input, &self.ctx)
+            .create_page(input, &ctx)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -411,7 +434,9 @@ impl MindPalaceMcpServer {
     async fn wiki_update(
         &self,
         Parameters(params): Parameters<UpdateParams>,
+        ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
         let slug =
             Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let sections = params.sections.map(|ss| {
@@ -435,7 +460,7 @@ impl MindPalaceMcpServer {
         };
         let (page, issues) = self
             .service
-            .update_page(&slug, input, &self.ctx)
+            .update_page(&slug, input, &ctx)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -454,7 +479,9 @@ impl MindPalaceMcpServer {
     async fn wiki_list(
         &self,
         Parameters(params): Parameters<ListParams>,
+        ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
         let filter = PageFilter {
             page_type: params.page_type.as_deref().map(parse_page_type),
             visibility: None,
@@ -463,7 +490,7 @@ impl MindPalaceMcpServer {
         };
         let pages = self
             .service
-            .list_pages(&filter, &self.ctx)
+            .list_pages(&filter, &ctx)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
@@ -490,11 +517,13 @@ impl MindPalaceMcpServer {
     async fn wiki_archive(
         &self,
         Parameters(params): Parameters<ArchiveParams>,
+        ext: Extensions,
     ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
         let slug =
             Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         self.service
-            .archive_page(&slug, &self.ctx)
+            .archive_page(&slug, &ctx)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let output = serde_json::json!({ "slug": params.slug, "archived": true });

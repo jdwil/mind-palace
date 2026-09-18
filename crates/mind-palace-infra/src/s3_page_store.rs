@@ -48,7 +48,7 @@ impl S3PageStore {
         for tid in &ctx.visible_tenants {
             prefixes.push(format!("{}/{}/pages/", self.config.prefix, tid.0));
         }
-        if let Some(uid) = &ctx.user_id {
+        if let Some(uid) = ctx.user_id() {
             prefixes.push(format!("{}/user-{}/pages/", self.config.prefix, uid));
         }
         prefixes

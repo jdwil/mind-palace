@@ -175,6 +175,55 @@ mod unit_tests {
         assert!(!ctx.can_see(&Visibility::Tenant(TenantId::new("other-org"))));
     }
 
+    // --- Identity-based visibility tests (Spec 1) ---
+
+    #[test]
+    fn anonymous_sees_only_general() {
+        let ctx = TenantContext::anonymous();
+        assert!(ctx.can_see(&Visibility::General));
+        // Any restriction is invisible to anonymous requests.
+        assert!(!ctx.can_see(&Visibility::Tenant(TenantId::new("client-a"))));
+        assert!(!ctx.can_see(&Visibility::User("alice@example.com".into())));
+        assert!(!ctx.can_see(&Visibility::Archived));
+    }
+
+    #[test]
+    fn user_sees_general_and_own_user_pages() {
+        let ctx = TenantContext::user("alice@example.com");
+        assert!(ctx.can_see(&Visibility::General));
+        assert!(ctx.can_see(&Visibility::User("alice@example.com".into())));
+        // Not another user's pages.
+        assert!(!ctx.can_see(&Visibility::User("bob@example.com".into())));
+        // Never archived.
+        assert!(!ctx.can_see(&Visibility::Archived));
+    }
+
+    #[test]
+    fn user_id_reflects_identity() {
+        let ctx = TenantContext::user("alice@example.com");
+        assert_eq!(ctx.user_id(), Some("alice@example.com"));
+        assert_eq!(TenantContext::anonymous().user_id(), None);
+        assert_eq!(TenantContext::global().user_id(), None);
+    }
+
+    #[test]
+    fn with_user_sets_user_identity() {
+        let ctx = TenantContext::global().with_user("carol@example.com");
+        assert_eq!(ctx.user_id(), Some("carol@example.com"));
+        assert!(ctx.can_see(&Visibility::User("carol@example.com".into())));
+        assert!(!ctx.can_see(&Visibility::User("dave@example.com".into())));
+    }
+
+    #[test]
+    fn global_identity_still_sees_everything() {
+        let ctx = TenantContext::global();
+        assert!(ctx.can_see(&Visibility::General));
+        assert!(ctx.can_see(&Visibility::Tenant(TenantId::new("any"))));
+        assert!(ctx.can_see(&Visibility::User("anyone@example.com".into())));
+        // But never archived.
+        assert!(!ctx.can_see(&Visibility::Archived));
+    }
+
     #[test]
     fn confidence_validation() {
         assert!(Confidence::new(0.0).is_some());
