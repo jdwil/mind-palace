@@ -45,7 +45,8 @@
 		sections = sections.filter((_, i) => i !== index);
 	}
 
-	async function handleSubmit() {
+	async function handleSubmit(e: Event) {
+		e.preventDefault();
 		saving = true;
 		error = null;
 		try {
@@ -70,7 +71,7 @@
 	}
 </script>
 
-<form class="mp-editor" onsubmit|preventDefault={handleSubmit}>
+<form class="mp-editor" onsubmit={handleSubmit}>
 	<h2 class="mp-editor__heading">{isEditMode ? 'Edit Page' : 'Create Page'}</h2>
 
 	{#if error}

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use mind_palace_core::domain::page::Page;
 use mind_palace_core::domain::tenant::TenantContext;
 use mind_palace_core::domain::value_objects::{
-    Confidence, PageAccess, PageId, PageType, Section, Slug, TableOfContents, Visibility,
+    Confidence, PageAccess, PageId, PageType, SecretRef, Section, Slug, TableOfContents, Visibility,
 };
 use mind_palace_core::error::MindPalaceError;
 use mind_palace_core::ports::page_store::{PageFilter, PageStore};
@@ -67,12 +67,20 @@ struct PageFrontmatter {
     /// before Spec 2 have no `access` and are migrated from `visibility` on load.
     #[serde(default)]
     access: Option<PageAccess>,
+    /// Spec 4 structured secret references (opaque locators, never values).
+    /// Optional/defaulted so pre-Spec-4 pages load cleanly.
+    #[serde(default)]
+    secret_refs: Vec<SecretRef>,
     confidence: f32,
     version: u32,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     links: Vec<String>,
     toc: TableOfContents,
+    /// Containment parent slug (Spec 3). Optional for backward compatibility:
+    /// pages written before Spec 3 have no `parent` and load as roots.
+    #[serde(default)]
+    parent: Option<String>,
 }
 
 fn serialize_page(page: &Page) -> Result<String, MindPalaceError> {
@@ -84,6 +92,8 @@ fn serialize_page(page: &Page) -> Result<String, MindPalaceError> {
         page_type: page.page_type.clone(),
         visibility: page.visibility.clone(),
         access: Some(page.access.clone()),
+        secret_refs: page.secret_refs.clone(),
+        parent: page.parent.as_ref().map(|s| s.as_str().to_string()),
         confidence: page.confidence.value(),
         version: page.version,
         created_at: page.created_at,
@@ -127,6 +137,12 @@ fn deserialize_page(raw: &str) -> Result<Page, MindPalaceError> {
         .access
         .unwrap_or_else(|| PageAccess::from_visibility(&fm.visibility));
 
+    // Spec 3 containment parent (optional).
+    let parent = match fm.parent {
+        Some(s) => Some(Slug::new(&s).map_err(|e| MindPalaceError::Serialization(e.to_string()))?),
+        None => None,
+    };
+
     Ok(Page {
         id: PageId(fm.id),
         slug,
@@ -137,11 +153,13 @@ fn deserialize_page(raw: &str) -> Result<Page, MindPalaceError> {
         page_type: fm.page_type,
         visibility: fm.visibility,
         access,
+        secret_refs: fm.secret_refs,
         confidence: Confidence::new(fm.confidence).unwrap_or_default(),
         version: fm.version,
         created_at: fm.created_at,
         updated_at: fm.updated_at,
         links,
+        parent,
     })
 }
 
@@ -483,11 +501,13 @@ mod tests {
             page_type: PageType::Leaf,
             visibility: Visibility::General,
             access: PageAccess::from_visibility(&Visibility::General),
+            secret_refs: vec![],
             confidence: Confidence::default(),
             version: 1,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             links: vec![],
+            parent: None,
         }
     }
 

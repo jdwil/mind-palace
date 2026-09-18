@@ -15,6 +15,9 @@ pub struct GraphNodeData {
     /// filter by owner/grants without an S3 fetch.
     pub access: PageAccess,
     pub page_type: PageType,
+    /// Containment parent (Spec 3), stored on the node so the in-memory graph
+    /// can resolve inherited access without an S3 fetch. `None` = a root page.
+    pub parent: Option<Slug>,
 }
 
 /// An edge as stored/loaded from the graph backend.

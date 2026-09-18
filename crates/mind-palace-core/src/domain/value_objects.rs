@@ -239,6 +239,37 @@ impl Visibility {
     }
 }
 
+/// A reference to a secret held in an external secrets backend (Spec 4).
+///
+/// **Reference, never value.** `reference` is an opaque, backend-specific
+/// locator — an ARN for the AWS Secrets Manager adapter, a path for Vault, etc.
+/// The secret VALUE is NEVER stored here (or anywhere in page content); it is
+/// resolved on demand through the [`SecretsResolver`](crate::ports::secrets::SecretsResolver)
+/// port by the separate `wiki_get_secret` operation, gated by page access.
+///
+/// This keeps credentials off the page-content channel entirely: pages, their
+/// S3 objects, version history, chat transcripts, and the dreaming logs only
+/// ever see the reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretRef {
+    /// A caller-facing name used to look the reference up on the page (the
+    /// `name` argument to `wiki_get_secret`). Unique per page by convention.
+    pub name: String,
+    /// The opaque backend locator (e.g. an ARN). Validated against the
+    /// configured backend's reference pattern on create/update; a value that
+    /// looks like a raw secret is rejected before it can be stored.
+    pub reference: String,
+}
+
+impl SecretRef {
+    pub fn new(name: impl Into<String>, reference: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            reference: reference.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PageType {
     Index,

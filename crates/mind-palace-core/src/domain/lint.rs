@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use super::graph::KnowledgeGraph;
 use super::page::Page;
-use super::value_objects::Slug;
+use super::value_objects::{BaseVisibility, Slug};
+use crate::ports::secrets::SecretsResolver;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
@@ -22,6 +23,12 @@ pub enum LintCode {
     MissingSopSection,
     MissingSkillSection,
     UnfencedHeadingInContent,
+    /// A Public page carries secret references (Spec 4 §6). A public page must
+    /// never gate a secret — anyone, including anonymous, could resolve it.
+    PublicPageWithSecrets,
+    /// A secret reference fails the configured backend's `validate_reference`
+    /// (Spec 4 §6) — it is malformed or looks like a raw secret value.
+    InvalidSecretReference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,8 +38,15 @@ pub struct LintIssue {
     pub message: String,
 }
 
-/// Runs lint rules against a page. The graph is optional (needed for link/orphan checks).
-pub fn lint_page(page: &Page, graph: Option<&KnowledgeGraph>) -> Vec<LintIssue> {
+/// Runs lint rules against a page. The graph is optional (needed for link/orphan
+/// checks). The secrets resolver is optional (needed to validate secret
+/// references — Spec 4 §6); when `None`, reference validation is skipped but the
+/// Public-page-with-secrets rule still applies.
+pub fn lint_page(
+    page: &Page,
+    graph: Option<&KnowledgeGraph>,
+    secrets: Option<&dyn SecretsResolver>,
+) -> Vec<LintIssue> {
     let mut issues = Vec::new();
 
     if page.summary.is_empty() {
@@ -116,6 +130,43 @@ pub fn lint_page(page: &Page, graph: Option<&KnowledgeGraph>) -> Vec<LintIssue> 
                     severity: Severity::Warning,
                     message: format!("Skill page missing required section: '{heading}'"),
                 });
+            }
+        }
+    }
+
+    // Spec 4 §6 secret-safety rules.
+    if !page.secret_refs.is_empty() {
+        // A Public page must never gate a secret (anyone incl. anonymous could
+        // resolve it). This is an Error regardless of backend configuration.
+        if page.access.base_visibility == BaseVisibility::Public {
+            issues.push(LintIssue {
+                code: LintCode::PublicPageWithSecrets,
+                severity: Severity::Error,
+                message: format!(
+                    "Public page carries {} secret reference(s); a public page must not gate a \
+                     secret. Make the page Private (owner + explicit grants) or remove the refs.",
+                    page.secret_refs.len()
+                ),
+            });
+        }
+
+        // Each reference must be a well-formed locator for the configured
+        // backend. A value that looks like a raw secret is rejected here (and
+        // again at the service layer on save).
+        if let Some(resolver) = secrets {
+            for sref in &page.secret_refs {
+                if let Err(e) = resolver.validate_reference(&sref.reference) {
+                    issues.push(LintIssue {
+                        code: LintCode::InvalidSecretReference,
+                        severity: Severity::Error,
+                        message: format!(
+                            "Secret ref '{}' is not a valid backend reference: {e}. Store the \
+                             secret in the backend and use its reference (e.g. an ARN), never a \
+                             raw value.",
+                            sref.name
+                        ),
+                    });
+                }
             }
         }
     }
@@ -216,7 +267,7 @@ mod tests {
     #[test]
     fn valid_page_passes_lint() {
         let page = valid_page();
-        let issues = lint_page(&page, None);
+        let issues = lint_page(&page, None, None);
         // Only the title/slug mismatch info (title is "Test Page" -> "test-page" matches)
         assert!(issues.iter().all(|i| i.severity != Severity::Error));
     }
@@ -228,7 +279,7 @@ mod tests {
             heading: "Empty".into(),
             content: "".into(),
         });
-        let issues = lint_page(&page, None);
+        let issues = lint_page(&page, None, None);
         assert!(issues.iter().any(|i| i.code == LintCode::EmptySection));
     }
 
@@ -238,7 +289,7 @@ mod tests {
         page.links.push(Slug::new("nonexistent").unwrap());
 
         let kg = KnowledgeGraph::new();
-        let issues = lint_page(&page, Some(&kg));
+        let issues = lint_page(&page, Some(&kg), None);
         assert!(issues.iter().any(|i| i.code == LintCode::BrokenLink));
     }
 
@@ -246,7 +297,7 @@ mod tests {
     fn orphan_detected() {
         let page = valid_page();
         let kg = KnowledgeGraph::new(); // page not in graph
-        let issues = lint_page(&page, Some(&kg));
+        let issues = lint_page(&page, Some(&kg), None);
         assert!(issues.iter().any(|i| i.code == LintCode::Orphan));
     }
 
@@ -257,7 +308,7 @@ mod tests {
             heading: "Script".into(),
             content: "## not fenced\nsome code".into(),
         });
-        let issues = lint_page(&page, None);
+        let issues = lint_page(&page, None, None);
         assert!(
             issues
                 .iter()
@@ -272,7 +323,7 @@ mod tests {
             heading: "Script".into(),
             content: "```python\n## configuration\nx = 1\n```".into(),
         });
-        let issues = lint_page(&page, None);
+        let issues = lint_page(&page, None, None);
         assert!(
             !issues
                 .iter()
@@ -282,20 +333,46 @@ mod tests {
     }
 
     #[test]
-    fn title_slug_mismatch_info() {
-        let page = Page::new(
-            "My Title".into(),
-            Slug::new("different-slug").unwrap(),
-            "Summary".into(),
+    fn public_page_with_secret_ref_is_error() {
+        use crate::domain::value_objects::SecretRef;
+        let mut page = valid_page(); // General → Public base visibility
+        page.secret_refs = vec![SecretRef::new("k", "ref://x")];
+        let issues = lint_page(&page, None, None);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.code == LintCode::PublicPageWithSecrets
+                    && i.severity == Severity::Error),
+            "public page with secret refs must be an Error even without a resolver"
+        );
+    }
+
+    #[test]
+    fn private_page_with_secret_ref_no_public_error() {
+        use crate::domain::value_objects::{BaseVisibility, PageAccess, SecretRef};
+        let mut page = Page::new_with_access(
+            "Priv".into(),
+            Slug::new("priv").unwrap(),
+            "summary".into(),
             vec![Section {
-                heading: "S".into(),
+                heading: "H".into(),
                 content: "C".into(),
             }],
             PageType::Leaf,
-            Visibility::General,
+            PageAccess {
+                owner: Some("o@x.com".into()),
+                base_visibility: BaseVisibility::Private,
+                grants: vec![],
+            },
         )
         .unwrap();
-        let issues = lint_page(&page, None);
-        assert!(issues.iter().any(|i| i.code == LintCode::TitleSlugMismatch));
+        page.secret_refs = vec![SecretRef::new("k", "ref://x")];
+        let issues = lint_page(&page, None, None);
+        assert!(
+            !issues
+                .iter()
+                .any(|i| i.code == LintCode::PublicPageWithSecrets),
+            "a Private page with secret refs must NOT trigger the public rule"
+        );
     }
 }

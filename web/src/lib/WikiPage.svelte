@@ -1,22 +1,29 @@
 <script lang="ts">
 	import { getClient, type PageFull } from './client.js';
 	import { marked } from 'marked';
+	import AccessPanel from './AccessPanel.svelte';
+	import HierarchyView from './HierarchyView.svelte';
+	import SecretRefs from './SecretRefs.svelte';
 
 	interface Props {
 		slug: string;
 		onNavigate?: (slug: string) => void;
+		/** Show the access/hierarchy/secrets management panels (default true). */
+		showManagement?: boolean;
 	}
 
-	let { slug, onNavigate }: Props = $props();
+	let { slug, onNavigate, showManagement = true }: Props = $props();
 
 	const client = getClient();
 	let page: PageFull | null = $state(null);
 	let loading = $state(true);
 	let error: string | null = $state(null);
+	let manageOpen = $state(false);
 
 	$effect(() => {
 		loading = true;
 		error = null;
+		manageOpen = false;
 		client.getPage(slug).then((result) => {
 			page = result;
 			loading = false;
@@ -81,6 +88,25 @@
 						{/each}
 					</ul>
 				</footer>
+			{/if}
+
+			{#if showManagement}
+				<section class="mp-page__manage">
+					<button
+						class="mp-page__manage-toggle"
+						aria-expanded={manageOpen}
+						onclick={() => (manageOpen = !manageOpen)}
+					>
+						{manageOpen ? '▾' : '▸'} Manage access
+					</button>
+					{#if manageOpen}
+						<div class="mp-page__manage-panels">
+							<AccessPanel {slug} />
+							<HierarchyView {slug} {onNavigate} />
+							<SecretRefs {slug} />
+						</div>
+					{/if}
+				</section>
 			{/if}
 		</article>
 	{/if}
@@ -180,5 +206,25 @@
 	}
 	.mp-page__error {
 		color: var(--mp-color-error, #dc2626);
+	}
+	.mp-page__manage {
+		margin-top: var(--mp-spacing-lg, 2rem);
+		padding-top: var(--mp-spacing-md, 1rem);
+		border-top: 1px solid var(--mp-color-border, #e5e5e5);
+	}
+	.mp-page__manage-toggle {
+		background: none;
+		border: none;
+		cursor: pointer;
+		font-weight: 600;
+		font-size: 0.9em;
+		color: var(--mp-color-muted, #6b7280);
+		padding: 0;
+	}
+	.mp-page__manage-panels {
+		display: flex;
+		flex-direction: column;
+		gap: var(--mp-spacing-md, 1rem);
+		margin-top: var(--mp-spacing-md, 1rem);
 	}
 </style>

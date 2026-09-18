@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::value_objects::{
-    Confidence, PageAccess, PageId, PageType, Section, Slug, TableOfContents, Visibility,
+    Confidence, PageAccess, PageId, PageType, SecretRef, Section, Slug, TableOfContents, Visibility,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,11 +20,24 @@ pub struct Page {
     /// Authoritative access model (Spec 2): owner + base_visibility + grants.
     #[serde(default)]
     pub access: PageAccess,
+    /// Structured secret references (Spec 4). Holds opaque backend locators
+    /// (e.g. ARNs), NEVER secret values. Resolved on demand via the separate,
+    /// access-checked `wiki_get_secret` operation — never returned inline by
+    /// `wiki_read`. Validated against the configured backend on create/update.
+    #[serde(default)]
+    pub secret_refs: Vec<SecretRef>,
     pub confidence: Confidence,
     pub version: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub links: Vec<Slug>,
+    /// Containment parent (Spec 3). `Some(slug)` means this page lives *under*
+    /// that container and inherits its access grants downward. Distinct from
+    /// `links` (which are purely associative `Related` edges carrying NO access
+    /// semantics). At most one parent; the containment relation forms a forest.
+    /// `None` = a root page → inherits nothing → behaves exactly as in Spec 2.
+    #[serde(default)]
+    pub parent: Option<Slug>,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -86,11 +99,13 @@ impl Page {
             page_type,
             visibility,
             access,
+            secret_refs: Vec::new(),
             confidence: Confidence::default(),
             version: 1,
             created_at: now,
             updated_at: now,
             links: Vec::new(),
+            parent: None,
         })
     }
 

@@ -166,7 +166,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AuthMode::None => tracing::warn!(
             "MP_AUTH_MODE=none — requests are ANONYMOUS and may see only fully-open (public) pages. Run behind a VPN/private network."
         ),
-        AuthMode::Token => tracing::info!("MP_AUTH_MODE=token — shared bearer-token authentication enabled."),
+        AuthMode::Token => {
+            tracing::info!("MP_AUTH_MODE=token — shared bearer-token authentication enabled.")
+        }
         AuthMode::Oidc => tracing::info!(
             "MP_AUTH_MODE=oidc — per-request JWT identity enabled; 401 discovery served at {PROTECTED_RESOURCE_PATH}."
         ),
@@ -196,12 +198,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config,
     );
 
-    let mcp_router = Router::new()
-        .nest_service(&mcp_path, mcp_service)
-        .layer(middleware::from_fn_with_state(
-            auth_state.clone(),
-            auth_middleware,
-        ));
+    let mcp_router =
+        Router::new()
+            .nest_service(&mcp_path, mcp_service)
+            .layer(middleware::from_fn_with_state(
+                auth_state.clone(),
+                auth_middleware,
+            ));
 
     let app = Router::new()
         .route("/health", get(health))

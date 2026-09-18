@@ -56,6 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 visibility: Visibility::General,
                 links: vec![],
                 base_visibility: None,
+                parent: None,
+                secret_refs: vec![],
             },
             &ctx,
         )

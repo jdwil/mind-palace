@@ -285,6 +285,8 @@ impl Tool for WikiCreateTool {
             },
             links,
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         };
         let (page, issues) = self.service.create_page(input, &self.ctx).await?;
         Ok(WikiCreateOutput {
@@ -361,6 +363,8 @@ impl Tool for WikiUpdateTool {
             links,
             replace_sections: args.replace_sections.unwrap_or(false),
             delete_sections: args.delete_sections.unwrap_or_default(),
+            parent: None,
+            secret_refs: None,
         };
         let (page, issues) = self.service.update_page(&slug, input, &self.ctx).await?;
         Ok(WikiUpdateOutput {

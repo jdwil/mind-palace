@@ -20,12 +20,14 @@ repository = "https://github.com/jdwilliams/mind-palace"
 mind-palace-core = { path = "crates/mind-palace-core" }
 mind-palace-infra = { path = "crates/mind-palace-infra" }
 mind-palace-rig = { path = "crates/mind-palace-rig" }
+mind-palace-mcp = { path = "crates/mind-palace-mcp" }
 
 async-trait = "0.1"
 aws-config = "1"
 aws-sdk-s3 = "1"
 aws-sdk-dynamodb = "1"
 aws-sdk-s3vectors = "1"
+aws-sdk-secretsmanager = "1"
 aws-sdk-bedrockruntime = "1"
 aws-smithy-types = "1"
 axum = "0.8"

@@ -6,16 +6,13 @@ license.workspace = true
 
 [dependencies]
 mind-palace-core = { workspace = true }
+# Shared, generic OIDC auth (Spec 1) — reused verbatim so the web API derives the
+# SAME identity the remote MCP server does (Spec 5 §4/§6, one identity path).
+mind-palace-mcp = { workspace = true }
 axum = { workspace = true }
-axum-extra = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-jsonwebtoken = { workspace = true }
-reqwest = { workspace = true }
-thiserror = { workspace = true }
-uuid = { workspace = true }
-chrono = { workspace = true }

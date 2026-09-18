@@ -11,12 +11,16 @@ use mind_palace_core::ports::embedding::EmbeddingPort;
 use mind_palace_core::ports::graph::GraphStore;
 use mind_palace_core::ports::group_store::GroupStore;
 use mind_palace_core::ports::page_store::PageStore;
+use mind_palace_core::ports::secrets::SecretsResolver;
 use mind_palace_core::ports::vector_search::VectorSearchPort;
 use mind_palace_infra::bedrock_embedding::{BedrockEmbedding, BedrockEmbeddingConfig};
 use mind_palace_infra::dynamo_graph_store::{DynamoGraphStore, DynamoGraphStoreConfig};
 use mind_palace_infra::dynamo_group_store::{DynamoGroupStore, DynamoGroupStoreConfig};
 use mind_palace_infra::s3_page_store::{S3PageStore, S3PageStoreConfig};
 use mind_palace_infra::s3vectors_search::{S3VectorsSearch, S3VectorsSearchConfig};
+use mind_palace_infra::secrets_resolver::{
+    AwsSecretsManagerConfig, AwsSecretsManagerResolver, DenySecretsResolver,
+};
 use tokio::sync::RwLock;
 
 fn env_or(key: &str, default: &str) -> String {
@@ -86,9 +90,38 @@ pub async fn build_service_from_env() -> Result<Arc<WikiService>, Box<dyn std::e
         Arc::new(RwLock::new(KnowledgeGraph::from_data(data)))
     };
 
+    // Spec 4: pluggable secrets backend. `MP_SECRETS_BACKEND=aws` enables the
+    // AWS Secrets Manager adapter restricted to `MP_SECRETS_ARN_PREFIX` (least
+    // privilege — the IAM role should grant GetSecretValue on that prefix only).
+    // Anything else (unset/none) uses the deny default: refs may be stored but
+    // never resolved.
+    let secrets_resolver: Arc<dyn SecretsResolver> = match env_or("MP_SECRETS_BACKEND", "none")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "aws" => {
+            let arn_prefix = env_or("MP_SECRETS_ARN_PREFIX", "");
+            if arn_prefix.trim().is_empty() {
+                tracing::warn!(
+                    "MP_SECRETS_BACKEND=aws but MP_SECRETS_ARN_PREFIX is empty; \
+                     falling back to the deny resolver (no secret can be resolved)"
+                );
+                Arc::new(DenySecretsResolver)
+            } else {
+                tracing::info!(prefix = %arn_prefix, "secrets backend: AWS Secrets Manager");
+                Arc::new(AwsSecretsManagerResolver::new(
+                    aws_sdk_secretsmanager::Client::new(&aws_cfg),
+                    AwsSecretsManagerConfig { arn_prefix },
+                ))
+            }
+        }
+        _ => Arc::new(DenySecretsResolver),
+    };
+
     Ok(Arc::new(
         WikiService::new(page_store, vector_search, embedding, graph_store, graph)
-            .with_group_store(group_store),
+            .with_group_store(group_store)
+            .with_secrets_resolver(secrets_resolver),
     ))
 }
 

@@ -82,7 +82,9 @@ crates/
 
 ```rust
 // Create a page (validates, lints, embeds, saves to S3/DDB/Vectors, updates graph)
-service.create_page(CreatePageInput { title, slug, summary, sections, page_type, visibility, links }, &ctx) -> (Page, Vec<LintIssue>)
+// `parent` (Spec 3, optional): a containment parent slug. The page inherits the
+// parent's access grants downward. Distinct from `links` (associative, no access).
+service.create_page(CreatePageInput { title, slug, summary, sections, page_type, visibility, links, base_visibility, parent }, &ctx) -> (Page, Vec<LintIssue>)
 
 // Read at different token-cost levels
 service.read_page(&slug, ReadLevel::Summary, &ctx) -> PageResponse::Summary { title, slug, summary, page_type }
@@ -96,7 +98,9 @@ service.search("rust ownership", &ctx, 5) -> Vec<SearchResult>
 service.traverse(&slug, depth, &ctx) -> Vec<NeighborInfo>
 
 // Update (re-lints, re-embeds, version bump)
-service.update_page(&slug, UpdatePageInput { title, summary, sections, links }, &ctx) -> (Page, Vec<LintIssue>)
+// `parent` (Spec 3): Option<Option<Slug>> — None = unchanged, Some(None) = detach
+// to root, Some(Some(s)) = reparent under s (requires can_edit on both, no cycle).
+service.update_page(&slug, UpdatePageInput { title, summary, sections, links, parent }, &ctx) -> (Page, Vec<LintIssue>)
 
 // Delete (removes from S3, DDB, Vectors, graph)
 service.delete_page(&slug, &ctx)

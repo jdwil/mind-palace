@@ -28,4 +28,7 @@ pub enum MindPalaceError {
 
     #[error("changelog error: {0}")]
     Changelog(String),
+
+    #[error("secret error: {0}")]
+    Secret(#[from] crate::ports::secrets::SecretError),
 }

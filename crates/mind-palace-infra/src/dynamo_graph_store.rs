@@ -93,6 +93,15 @@ impl GraphStore for DynamoGraphStore {
                         None => PageAccess::from_visibility(&visibility),
                     };
 
+                    // Containment parent (Spec 3). Optional: pre-Spec-3 nodes and
+                    // root pages have no `parent` attribute → `None`.
+                    let parent = match item.get("parent").and_then(|v| v.as_s().ok()) {
+                        Some(s) => {
+                            Some(Slug::new(s).map_err(|e| MindPalaceError::Graph(e.to_string()))?)
+                        }
+                        None => None,
+                    };
+
                     nodes.push(GraphNodeData {
                         page_id,
                         slug,
@@ -101,6 +110,7 @@ impl GraphStore for DynamoGraphStore {
                         visibility,
                         access,
                         page_type,
+                        parent,
                     });
                 } else if let Some(target_str) = sk.strip_prefix("EDGE#") {
                     let source = Self::parse_page_id(&pk)?;
@@ -136,7 +146,8 @@ impl GraphStore for DynamoGraphStore {
         let access_json = serde_json::to_string(&node.access)
             .map_err(|e| MindPalaceError::Graph(e.to_string()))?;
 
-        self.client
+        let mut req = self
+            .client
             .put_item()
             .table_name(&self.config.table_name)
             .item("PK", Self::pk(&node.page_id))
@@ -146,8 +157,13 @@ impl GraphStore for DynamoGraphStore {
             .item("summary", AttributeValue::S(node.summary.clone()))
             .item("visibility", AttributeValue::S(visibility_json))
             .item("access", AttributeValue::S(access_json))
-            .item("page_type", AttributeValue::S(page_type_json))
-            .send()
+            .item("page_type", AttributeValue::S(page_type_json));
+        // Containment parent (Spec 3) — write only when present so root pages
+        // carry no attribute (and pre-Spec-3 readers ignore it).
+        if let Some(parent) = &node.parent {
+            req = req.item("parent", AttributeValue::S(parent.as_str().to_string()));
+        }
+        req.send()
             .await
             .map_err(|e| MindPalaceError::Graph(e.to_string()))?;
         Ok(())

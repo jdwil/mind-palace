@@ -102,8 +102,7 @@ impl AuthConfig {
         let oidc = if mode == AuthMode::Oidc {
             let issuer =
                 env_opt("MP_OIDC_ISSUER").ok_or(ConfigError::MissingOidc("MP_OIDC_ISSUER"))?;
-            let jwks_url =
-                env_opt("MP_OIDC_JWKS_URL").unwrap_or_else(|| default_jwks_url(&issuer));
+            let jwks_url = env_opt("MP_OIDC_JWKS_URL").unwrap_or_else(|| default_jwks_url(&issuer));
             let audiences = env_opt("MP_OIDC_AUDIENCES")
                 .map(|s| {
                     s.split(',')
@@ -330,10 +329,7 @@ pub struct Authenticator {
 
 impl Authenticator {
     pub fn new(config: AuthConfig) -> Self {
-        let validator = config
-            .oidc
-            .clone()
-            .map(|c| Arc::new(OidcValidator::new(c)));
+        let validator = config.oidc.clone().map(|c| Arc::new(OidcValidator::new(c)));
         Self { config, validator }
     }
 
@@ -461,7 +457,10 @@ mod tests {
     // --- JWT validation (§3.2, criteria 3/4/5) ---
 
     fn cfg() -> (String, Vec<String>) {
-        ("https://issuer.example".to_string(), vec!["mp-api".to_string()])
+        (
+            "https://issuer.example".to_string(),
+            vec!["mp-api".to_string()],
+        )
     }
 
     #[test]
@@ -476,10 +475,21 @@ mod tests {
             "exp": now() + 3600,
         }));
         let id = validate_token_with_key(
-            &token, &key, Algorithm::HS256, &issuer, &auds, "email", "sub",
+            &token,
+            &key,
+            Algorithm::HS256,
+            &issuer,
+            &auds,
+            "email",
+            "sub",
         )
         .expect("valid token");
-        assert_eq!(id, Identity::User { id: "alice@example.com".into() });
+        assert_eq!(
+            id,
+            Identity::User {
+                id: "alice@example.com".into()
+            }
+        );
     }
 
     #[test]
@@ -495,10 +505,21 @@ mod tests {
             "exp": now() + 3600,
         }));
         let id = validate_token_with_key(
-            &token, &key, Algorithm::HS256, &issuer, &auds, "email", "sub",
+            &token,
+            &key,
+            Algorithm::HS256,
+            &issuer,
+            &auds,
+            "email",
+            "sub",
         )
         .unwrap();
-        assert_eq!(id, Identity::User { id: "agent-bot@example.com".into() });
+        assert_eq!(
+            id,
+            Identity::User {
+                id: "agent-bot@example.com".into()
+            }
+        );
     }
 
     #[test]
@@ -512,7 +533,13 @@ mod tests {
             "exp": now() - 3600, // expired an hour ago
         }));
         let res = validate_token_with_key(
-            &token, &key, Algorithm::HS256, &issuer, &auds, "email", "sub",
+            &token,
+            &key,
+            Algorithm::HS256,
+            &issuer,
+            &auds,
+            "email",
+            "sub",
         );
         assert!(matches!(res, Err(AuthError::Validation(_))), "got {res:?}");
     }
@@ -528,7 +555,13 @@ mod tests {
             "exp": now() + 3600,
         }));
         let res = validate_token_with_key(
-            &token, &key, Algorithm::HS256, &issuer, &auds, "email", "sub",
+            &token,
+            &key,
+            Algorithm::HS256,
+            &issuer,
+            &auds,
+            "email",
+            "sub",
         );
         assert!(matches!(res, Err(AuthError::Validation(_))), "got {res:?}");
     }
@@ -544,7 +577,13 @@ mod tests {
             "exp": now() + 3600,
         }));
         let res = validate_token_with_key(
-            &token, &key, Algorithm::HS256, "https://issuer.example", &auds, "email", "sub",
+            &token,
+            &key,
+            Algorithm::HS256,
+            "https://issuer.example",
+            &auds,
+            "email",
+            "sub",
         );
         assert!(matches!(res, Err(AuthError::Validation(_))), "got {res:?}");
     }
@@ -560,10 +599,21 @@ mod tests {
             "exp": now() + 3600,
         }));
         let id = validate_token_with_key(
-            &token, &key, Algorithm::HS256, &issuer, &auds, "email", "sub",
+            &token,
+            &key,
+            Algorithm::HS256,
+            &issuer,
+            &auds,
+            "email",
+            "sub",
         )
         .unwrap();
-        assert_eq!(id, Identity::User { id: "svc-account-7".into() });
+        assert_eq!(
+            id,
+            Identity::User {
+                id: "svc-account-7".into()
+            }
+        );
     }
 
     // --- Authenticator (None / Token modes) ---
@@ -594,7 +644,9 @@ mod tests {
         });
         assert_eq!(
             auth.authenticate(Some("s3cret")).await.unwrap(),
-            Identity::User { id: "shared-agent".into() }
+            Identity::User {
+                id: "shared-agent".into()
+            }
         );
         assert!(matches!(
             auth.authenticate(Some("wrong")).await,
@@ -687,7 +739,10 @@ mod tests {
         let cfg = AuthConfig::from_env().unwrap();
         let oidc = cfg.oidc.unwrap();
         assert_eq!(oidc.issuer, "https://issuer.example/pool");
-        assert_eq!(oidc.jwks_url, "https://issuer.example/pool/.well-known/jwks.json");
+        assert_eq!(
+            oidc.jwks_url,
+            "https://issuer.example/pool/.well-known/jwks.json"
+        );
         assert_eq!(oidc.auth_server_url, "https://issuer.example/pool");
         assert_eq!(oidc.audiences, vec!["a", "b", "c"]);
         assert_eq!(oidc.email_claim, "email");

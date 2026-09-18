@@ -232,9 +232,10 @@ fn private_page_input(slug: &str) -> CreatePageInput {
         visibility: Visibility::General,
         links: vec![],
         base_visibility: Some(BaseVisibility::Private),
+        parent: None,
+        secret_refs: vec![],
     }
 }
-
 // --- Criterion 1 & 3: private page invisible to non-owner; owner can edit ---
 
 #[tokio::test]
@@ -389,6 +390,50 @@ async fn non_manager_cannot_add_group_member() {
     assert!(matches!(res, Err(MindPalaceError::AccessDenied(_))));
 }
 
+// --- Spec 5 §2/§5: manager mutation is manager-only, last manager protected ---
+
+#[tokio::test]
+async fn manager_mutation_is_manager_only_and_protects_last_manager() {
+    let svc = make_service();
+    let owner = TenantContext::user("owner@x.com"); // creator == sole initial manager
+    let member = TenantContext::user("member@x.com");
+
+    svc.group_create(GroupId::new("g"), "G", &owner)
+        .await
+        .unwrap();
+    svc.group_add_member(&GroupId::new("g"), "member@x.com", &owner)
+        .await
+        .unwrap();
+
+    // A non-manager member cannot promote managers.
+    let denied = svc
+        .group_add_manager(&GroupId::new("g"), "member@x.com", &member)
+        .await;
+    assert!(matches!(denied, Err(MindPalaceError::AccessDenied(_))));
+
+    // The manager promotes the member; add_manager also makes them a member.
+    let g = svc
+        .group_add_manager(&GroupId::new("g"), "member@x.com", &owner)
+        .await
+        .unwrap();
+    assert!(g.is_manager("member@x.com"));
+    assert!(g.is_member("member@x.com"));
+
+    // Now the promoted principal (a manager) may demote the original manager.
+    let g = svc
+        .group_remove_manager(&GroupId::new("g"), "owner@x.com", &member)
+        .await
+        .unwrap();
+    assert!(!g.is_manager("owner@x.com"));
+    assert!(g.is_manager("member@x.com"));
+
+    // Removing the LAST manager is refused so the group stays manageable.
+    let last = svc
+        .group_remove_manager(&GroupId::new("g"), "member@x.com", &member)
+        .await;
+    assert!(matches!(last, Err(MindPalaceError::Validation(_))));
+}
+
 // --- Criterion 5: search/list never return a page the identity can't see ---
 
 #[tokio::test]
@@ -422,7 +467,10 @@ async fn search_and_list_filter_by_access() {
 
     // Stranger's search never returns the private page.
     let results = svc.search("anything", &stranger, 10).await.unwrap();
-    let rslugs: Vec<_> = results.iter().map(|r| r.slug.as_str().to_string()).collect();
+    let rslugs: Vec<_> = results
+        .iter()
+        .map(|r| r.slug.as_str().to_string())
+        .collect();
     assert!(!rslugs.contains(&"priv".to_string()));
 
     // Owner sees both in list.

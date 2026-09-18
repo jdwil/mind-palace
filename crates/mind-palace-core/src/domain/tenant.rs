@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::value_objects::{BaseVisibility, GroupId, Level, PageAccess, Principal, TenantId, Visibility};
+use super::value_objects::{
+    BaseVisibility, GroupId, Level, PageAccess, Principal, TenantId, Visibility,
+};
 
 /// Who is making a request, independent of tenant scoping.
 ///
@@ -172,9 +174,7 @@ impl TenantContext {
     /// Sets `identity` to `Identity::User { id }`. Preserves any tenant scoping
     /// already set on the context.
     pub fn with_user(mut self, user_id: impl Into<String>) -> Self {
-        self.identity = Identity::User {
-            id: user_id.into(),
-        };
+        self.identity = Identity::User { id: user_id.into() };
         self
     }
 
@@ -296,8 +296,7 @@ impl TenantContext {
         // tenant-group grants: a Group grant whose id is a visible tenant.
         access.grants.iter().any(|g| match &g.principal {
             Principal::Group(gid) => {
-                membership.contains(gid)
-                    || self.visible_tenants.iter().any(|t| t.0 == gid.0)
+                membership.contains(gid) || self.visible_tenants.iter().any(|t| t.0 == gid.0)
             }
             Principal::User(_) => false,
         })
@@ -526,10 +525,12 @@ mod access_tests {
         ));
         assert_eq!(a.base_visibility, BaseVisibility::Private);
         match &a.grants[..] {
-            [Grant {
-                principal: Principal::Group(g),
-                level: Level::View,
-            }] => assert_eq!(g.as_str(), "acme"),
+            [
+                Grant {
+                    principal: Principal::Group(g),
+                    level: Level::View,
+                },
+            ] => assert_eq!(g.as_str(), "acme"),
             _ => panic!("expected a single group view grant"),
         }
     }

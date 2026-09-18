@@ -6,7 +6,7 @@ use mind_palace_core::domain::service::{
 };
 use mind_palace_core::domain::tenant::{Identity, TenantContext};
 use mind_palace_core::domain::value_objects::{
-    BaseVisibility, GroupId, Level, PageType, Principal, Section, Slug, Visibility,
+    BaseVisibility, GroupId, Level, PageType, Principal, SecretRef, Section, Slug, Visibility,
 };
 use mind_palace_core::ports::page_store::PageFilter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -82,6 +82,17 @@ You can store Python scripts, SQL queries, shell commands, config, etc. Follow t
 2. **Pair code with a prose description** in the same section (what it does, when to use it, inputs/outputs). Semantic search embeds the whole page; a bare code dump with no prose is hard to find. The prose is what makes the snippet retrievable.
 
 Use a `Leaf` page for a standalone reusable script/query, or put the code in the `Example` section of a `Skill` page. There is no separate "code" page type — a fenced block in a normal section is the right home.
+
+## Secrets — NEVER store a plaintext secret
+
+A wiki page must NEVER contain a plaintext secret (API key, token, password, connection string with credentials). Page content is stored in S3, kept in version history, and flows through chat transcripts and the dreaming process — a secret written into a page leaks into all of them.
+
+Rules:
+- **If a user gives you a raw secret to "save", REFUSE.** Do not put it in a section, summary, or anywhere in page text. Instead, tell them to store it in the secrets backend (e.g. AWS Secrets Manager) and give you the *reference* (e.g. an ARN).
+- **Store only references, in the structured `secret_refs` field** — never in free text. Each ref is `{ name, reference }` where `reference` is an opaque locator, never the value. The system REJECTS a `secret_refs` entry whose reference looks like a raw secret (code-level guardrail, not just this instruction).
+- **A page carrying secret refs must be Private** (owner + explicit grants). A Public page with secret refs fails lint (Error) — anyone, including anonymous, could resolve it.
+- **Resolve a secret only when you actually need it**, via the separate `wiki_get_secret(slug, name)` tool. `wiki_read` never returns secret values — only the reference/name.
+- **Never echo a resolved value** into your visible output, another page, a log, or storage. Use it for the immediate operation only. Every resolution is audit-logged.
 
 ## Visibility — General vs User-Scoped Pages
 
@@ -198,6 +209,24 @@ pub struct CreateParams {
         description = "Spec 2 base visibility: 'public' (open to everyone incl. anonymous) or 'private' (owner + explicit grants only). If omitted, inferred from `visibility`. Owner is set to the caller."
     )]
     pub base_visibility: Option<String>,
+    #[schemars(
+        description = "Optional containment parent slug (Spec 3). Places this page UNDER that container so it inherits the container's access grants downward. Distinct from `links` (which are 'see also' associations carrying NO access). Requires edit permission on BOTH this page and the parent, and must not form a cycle. Omit for a top-level page."
+    )]
+    pub parent: Option<String>,
+    #[schemars(
+        description = "Optional structured secret references (Spec 4). Each is { name, reference } where `reference` is an opaque backend locator (e.g. an AWS Secrets Manager ARN) — NEVER a raw secret value. Raw values are REJECTED. Resolve later with wiki_get_secret. Do NOT put secret references on a Public page (lint Error); the page must be Private."
+    )]
+    pub secret_refs: Option<Vec<SecretRefInput>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SecretRefInput {
+    #[schemars(description = "A name used to look up this reference via wiki_get_secret")]
+    pub name: String,
+    #[schemars(
+        description = "Opaque backend locator (e.g. an AWS Secrets Manager ARN). NEVER a raw secret value — raw values are rejected."
+    )]
+    pub reference: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -219,6 +248,18 @@ pub struct UpdateParams {
         description = "Section headings to delete from the page. Use this to remove a stale/superseded section (applied after merge/replace)."
     )]
     pub delete_sections: Option<Vec<String>>,
+    #[schemars(
+        description = "Set/change the containment parent (Spec 3): a slug to (re)parent this page under that container (inherits its access grants; requires edit on both and no cycle). Omit to leave the parent unchanged. To DETACH to top-level, set detach_parent=true instead."
+    )]
+    pub parent: Option<String>,
+    #[schemars(
+        description = "If true, detach this page from its containment parent (make it top-level). Ignored if `parent` is also set."
+    )]
+    pub detach_parent: Option<bool>,
+    #[schemars(
+        description = "Optional: REPLACE the page's secret references (Spec 4) with this list of { name, reference }. Each `reference` is an opaque backend locator (e.g. an ARN), NEVER a raw secret value (rejected). Omit to leave secret refs unchanged; pass [] to clear them."
+    )]
+    pub secret_refs: Option<Vec<SecretRefInput>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -243,7 +284,9 @@ pub struct ShareParams {
         description = "Grantee kind: 'user' (an email) or 'group' (a group id). Determines how `principal` is interpreted."
     )]
     pub principal_type: String,
-    #[schemars(description = "The grantee: an email (principal_type=user) or group id (principal_type=group)")]
+    #[schemars(
+        description = "The grantee: an email (principal_type=user) or group id (principal_type=group)"
+    )]
     pub principal: String,
     #[schemars(description = "Permission level: 'view' or 'edit' (default 'view')")]
     pub level: Option<String>,
@@ -273,6 +316,16 @@ pub struct GroupMemberParams {
     pub id: String,
     #[schemars(description = "Member email to add or remove")]
     pub member: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetSecretParams {
+    #[schemars(description = "Slug of the page that carries the secret reference")]
+    pub slug: String,
+    #[schemars(
+        description = "The `name` of the secret reference on that page (as set in secret_refs)"
+    )]
+    pub name: String,
 }
 
 // --- Tool router ---
@@ -477,6 +530,13 @@ impl MindPalaceMcpServer {
             visibility,
             links,
             base_visibility,
+            parent: params.parent.as_deref().and_then(|s| Slug::new(s).ok()),
+            secret_refs: params
+                .secret_refs
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| SecretRef::new(r.name, r.reference))
+                .collect(),
         };
         let (page, issues) = self
             .service
@@ -515,6 +575,20 @@ impl MindPalaceMcpServer {
         let links = params
             .links
             .map(|ls| ls.into_iter().filter_map(|s| Slug::new(&s).ok()).collect());
+        // Spec 3 three-state reparent:
+        //   parent=Some(slug)      → reparent under slug
+        //   detach_parent=true     → detach to root (Some(None))
+        //   neither                → leave unchanged (None)
+        let parent = if let Some(p) = params.parent.as_deref() {
+            match Slug::new(p) {
+                Ok(s) => Some(Some(s)),
+                Err(e) => return Err(McpError::internal_error(e.to_string(), None)),
+            }
+        } else if params.detach_parent.unwrap_or(false) {
+            Some(None)
+        } else {
+            None
+        };
         let input = UpdatePageInput {
             title: params.title,
             summary: params.summary,
@@ -522,6 +596,12 @@ impl MindPalaceMcpServer {
             links,
             replace_sections: params.replace_sections.unwrap_or(false),
             delete_sections: params.delete_sections.unwrap_or_default(),
+            parent,
+            secret_refs: params.secret_refs.map(|v| {
+                v.into_iter()
+                    .map(|r| SecretRef::new(r.name, r.reference))
+                    .collect()
+            }),
         };
         let (page, issues) = self
             .service
@@ -738,6 +818,47 @@ impl MindPalaceMcpServer {
         let content =
             Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Resolve a page's secret REFERENCE to its value (Spec 4). This is the ONLY way to obtain a secret value; wiki_read never returns values. SENSITIVITY CONTRACT: the returned `value` is a live credential — use it ONLY for the immediate operation, NEVER echo it into visible output, chat, logs, or a wiki page, and never store it. Access is gated: you must be able to see the page. Every call is audit-logged."
+    )]
+    async fn wiki_get_secret(
+        &self,
+        Parameters(params): Parameters<GetSecretParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let slug =
+            Slug::new(&params.slug).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        match self.service.get_secret(&slug, &params.name, &ctx).await {
+            Ok(secret) => {
+                let value = serde_json::json!({
+                    "found": true,
+                    "slug": params.slug,
+                    "name": params.name,
+                    "value": secret.expose(),
+                    "sensitivity": "SECRET — do not echo, log, or store this value. Use it only for the immediate operation.",
+                });
+                let content = Content::json(value)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            // Page invisible/absent OR the named ref is absent → clean not-found,
+            // mirroring wiki_read (never a raw crash, never leaks existence).
+            Err(mind_palace_core::error::MindPalaceError::PageNotFound(_)) => {
+                let value = serde_json::json!({
+                    "found": false,
+                    "slug": params.slug,
+                    "name": params.name,
+                    "message": "No such secret reference, or the page is not accessible with the current identity.",
+                });
+                let content = Content::json(value)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![content]))
+            }
+            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        }
     }
 }
 

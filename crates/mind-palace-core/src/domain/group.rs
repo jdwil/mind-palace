@@ -58,4 +58,23 @@ impl Group {
     pub fn remove_member(&mut self, email: &str) {
         self.members.retain(|m| m != email);
     }
+
+    /// Add a manager (idempotent). A manager is also made a member, since a
+    /// manager who cannot see the group's grants would be useless — this mirrors
+    /// the `Group::new` invariant that the creator is both. Authorization
+    /// (only-a-manager-may-do-this) is enforced by the service, not here.
+    pub fn add_manager(&mut self, email: impl Into<String>) {
+        let email = email.into();
+        if !self.is_manager(&email) {
+            self.managers.push(email.clone());
+        }
+        self.add_member(email);
+    }
+
+    /// Remove a manager (idempotent). Does not remove the underlying membership.
+    /// The service is responsible for refusing to remove the last manager so a
+    /// group can never become unmanageable.
+    pub fn remove_manager(&mut self, email: &str) {
+        self.managers.retain(|m| m != email);
+    }
 }

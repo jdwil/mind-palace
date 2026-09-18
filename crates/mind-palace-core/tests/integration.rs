@@ -185,6 +185,8 @@ async fn create_index_concept_leaf_and_verify_graph_connectivity() {
             visibility: Visibility::General,
             links: vec![],
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         },
         &ctx,
     )
@@ -205,6 +207,8 @@ async fn create_index_concept_leaf_and_verify_graph_connectivity() {
             visibility: Visibility::General,
             links: vec![Slug::new("knowledge-index").unwrap()],
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         },
         &ctx,
     )
@@ -226,6 +230,8 @@ async fn create_index_concept_leaf_and_verify_graph_connectivity() {
             visibility: Visibility::General,
             links: vec![Slug::new("rust-language").unwrap()],
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         },
         &ctx,
     )
@@ -280,6 +286,8 @@ async fn read_at_different_levels_summary_shorter_than_full() {
             visibility: Visibility::General,
             links: vec![],
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         },
         &ctx,
     )
@@ -331,6 +339,8 @@ async fn tenant_isolation_prevents_cross_tenant_access() {
             visibility: Visibility::Tenant(TenantId::new("tenant-a")),
             links: vec![],
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         },
         &tenant_a,
     )
@@ -385,6 +395,8 @@ async fn tenant_isolation_list_pages_filters_correctly() {
             visibility: Visibility::Tenant(TenantId::new("tenant-a")),
             links: vec![],
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         },
         &tenant_a,
     )
@@ -404,6 +416,8 @@ async fn tenant_isolation_list_pages_filters_correctly() {
             visibility: Visibility::General,
             links: vec![],
             base_visibility: None,
+            parent: None,
+            secret_refs: vec![],
         },
         &tenant_a,
     )
