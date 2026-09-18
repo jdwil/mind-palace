@@ -132,11 +132,67 @@ variable "embedding_model" {
 
 # --- Auth ---
 
+variable "auth_mode" {
+  description = "Auth mode: 'none' (anonymous, VPN only — sees only public pages), 'token' (shared bearer), or 'oidc' (per-user JWT identity)."
+  type        = string
+  default     = "none"
+  validation {
+    condition     = contains(["none", "token", "oidc"], var.auth_mode)
+    error_message = "auth_mode must be one of: none, token, oidc."
+  }
+}
+
 variable "auth_token" {
-  description = "Optional bearer token. null/empty = auth DISABLED (only use behind a VPN/internal ALB). If set, stored in Secrets Manager and injected as MP_AUTH_TOKEN."
+  description = "Shared bearer token. Required when auth_mode = 'token'. Stored in Secrets Manager and injected as MP_AUTH_TOKEN."
   type        = string
   default     = null
   sensitive   = true
+}
+
+# --- OIDC (used when auth_mode = 'oidc') ---
+
+variable "oidc_issuer" {
+  description = "OIDC issuer URL. For Cognito: https://cognito-idp.<region>.amazonaws.com/<userPoolId>. Required when auth_mode = 'oidc'."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_jwks_url" {
+  description = "JWKS endpoint. Defaults (in the server) to <issuer>/.well-known/jwks.json — leave empty for Cognito."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_audiences" {
+  description = "Comma-separated allowed aud/client_id values (your app client IDs). Strongly recommended in production."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_email_claim" {
+  description = "JWT claim used as the user identity."
+  type        = string
+  default     = "email"
+}
+
+variable "oidc_fallback_claim" {
+  description = "Identity claim used when the email claim is absent (M2M tokens)."
+  type        = string
+  default     = "sub"
+}
+
+variable "public_url" {
+  description = "The server's externally reachable URL (e.g. https://mind-palace.example.com). Advertised in OIDC discovery metadata. Required for oidc mode; if empty, defaults to the ALB DNS (https when a cert is set, else http)."
+  type        = string
+  default     = ""
+}
+
+# --- HTTPS ---
+
+variable "acm_certificate_arn" {
+  description = "ACM certificate ARN for an HTTPS (443) listener. REQUIRED for auth_mode 'token' or 'oidc' (bearer credentials must not travel plaintext). If empty, only an HTTP (80) listener is created — acceptable ONLY for auth_mode 'none' behind a VPN."
+  type        = string
+  default     = ""
 }
 
 variable "allowed_hosts" {

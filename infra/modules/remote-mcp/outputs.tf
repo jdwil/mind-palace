@@ -1,6 +1,6 @@
 output "endpoint_url" {
   description = "MCP endpoint URL — point your agent client here"
-  value       = "http://${aws_lb.mcp.dns_name}/mcp"
+  value       = "${local.public_url}/mcp"
 }
 
 output "alb_dns_name" {
@@ -10,7 +10,7 @@ output "alb_dns_name" {
 
 output "health_url" {
   description = "Health check URL"
-  value       = "http://${aws_lb.mcp.dns_name}/health"
+  value       = "${local.public_url}/health"
 }
 
 output "cluster_name" {

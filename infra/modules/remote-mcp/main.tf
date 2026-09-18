@@ -7,7 +7,16 @@ locals {
     ManagedBy = "terraform"
   }, var.tags)
 
-  use_auth = var.auth_token != null && var.auth_token != ""
+  # Token secret is created only in token mode with a token provided.
+  use_auth = var.auth_mode == "token" && var.auth_token != null && var.auth_token != ""
+
+  # HTTPS listener when a cert is supplied.
+  use_https = var.acm_certificate_arn != ""
+
+  # Advertised public URL: explicit override, else derive from ALB DNS + scheme.
+  scheme      = local.use_https ? "https" : "http"
+  derived_url = "${local.scheme}://${aws_lb.mcp.dns_name}"
+  public_url  = var.public_url != "" ? var.public_url : local.derived_url
 }
 
 data "aws_caller_identity" "current" {}
@@ -53,6 +62,17 @@ resource "aws_security_group" "alb" {
     to_port     = 80
     protocol    = "tcp"
     cidr_blocks = var.ingress_cidrs
+  }
+
+  dynamic "ingress" {
+    for_each = local.use_https ? [1] : []
+    content {
+      description = "MCP HTTPS in"
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      cidr_blocks = var.ingress_cidrs
+    }
   }
 
   egress {
@@ -120,14 +140,70 @@ resource "aws_lb_target_group" "mcp" {
   tags = local.tags
 }
 
-resource "aws_lb_listener" "mcp" {
+resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.mcp.arn
   port              = 80
   protocol          = "HTTP"
 
+  # When HTTPS is enabled, HTTP redirects to it; otherwise HTTP forwards
+  # directly (acceptable only for auth_mode=none behind a VPN).
+  dynamic "default_action" {
+    for_each = local.use_https ? [1] : []
+    content {
+      type = "redirect"
+      redirect {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = local.use_https ? [] : [1]
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.mcp.arn
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  count             = local.use_https ? 1 : 0
+  load_balancer_arn = aws_lb.mcp.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.mcp.arn
+  }
+}
+
+# =============================================================================
+# Configuration guardrails (fail plan on unsafe combos)
+# =============================================================================
+
+check "auth_requires_https" {
+  assert {
+    condition     = var.auth_mode == "none" || local.use_https
+    error_message = "auth_mode '${var.auth_mode}' requires HTTPS: set acm_certificate_arn. Bearer tokens/JWTs must not travel plaintext."
+  }
+}
+
+check "token_mode_requires_token" {
+  assert {
+    condition     = var.auth_mode != "token" || (var.auth_token != null && var.auth_token != "")
+    error_message = "auth_mode 'token' requires auth_token to be set."
+  }
+}
+
+check "oidc_mode_requires_issuer" {
+  assert {
+    condition     = var.auth_mode != "oidc" || var.oidc_issuer != ""
+    error_message = "auth_mode 'oidc' requires oidc_issuer (e.g. https://cognito-idp.<region>.amazonaws.com/<userPoolId>)."
   }
 }
 
@@ -250,10 +326,12 @@ resource "aws_ecs_task_definition" "mcp" {
 
     portMappings = [{ containerPort = var.container_port, protocol = "tcp" }]
 
-    environment = [
+    environment = concat([
       { name = "MP_BIND_ADDR", value = "0.0.0.0:${var.container_port}" },
       { name = "MP_MCP_PATH", value = "/mcp" },
       { name = "MP_ALLOWED_HOSTS", value = var.allowed_hosts },
+      { name = "MP_PUBLIC_URL", value = local.public_url },
+      { name = "MP_AUTH_MODE", value = var.auth_mode },
       { name = "MIND_PALACE_S3_BUCKET", value = var.pages_bucket },
       { name = "MIND_PALACE_S3_PREFIX", value = var.s3_prefix },
       { name = "MIND_PALACE_DYNAMO_TABLE", value = var.graph_table },
@@ -262,7 +340,15 @@ resource "aws_ecs_task_definition" "mcp" {
       { name = "MIND_PALACE_BEDROCK_MODEL", value = var.embedding_model },
       { name = "MIND_PALACE_REGION", value = var.region },
       { name = "RUST_LOG", value = "mind_palace_mcp=info,info" },
-    ]
+      ],
+      var.auth_mode == "oidc" ? [
+        { name = "MP_OIDC_ISSUER", value = var.oidc_issuer },
+        { name = "MP_OIDC_JWKS_URL", value = var.oidc_jwks_url },
+        { name = "MP_OIDC_AUDIENCES", value = var.oidc_audiences },
+        { name = "MP_OIDC_EMAIL_CLAIM", value = var.oidc_email_claim },
+        { name = "MP_OIDC_FALLBACK_CLAIM", value = var.oidc_fallback_claim },
+      ] : []
+    )
 
     secrets = local.use_auth ? [
       { name = "MP_AUTH_TOKEN", valueFrom = aws_secretsmanager_secret.auth[0].arn }
@@ -300,7 +386,7 @@ resource "aws_ecs_service" "mcp" {
     container_port   = var.container_port
   }
 
-  depends_on = [aws_lb_listener.mcp]
+  depends_on = [aws_lb_listener.http]
 
   tags = local.tags
 }
