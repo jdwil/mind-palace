@@ -378,7 +378,9 @@ impl Authenticator {
 /// discover the authorization server and run the browser sign-in flow.
 #[derive(Debug, Serialize)]
 pub struct ProtectedResourceMetadata {
-    /// The protected resource identifier (this server's public URL).
+    /// The canonical resource identifier the client calls — the MCP endpoint
+    /// including its path (e.g. `https://host/mcp`), per RFC 9728. Must match
+    /// what the client targets or compliant clients reject it as a mismatch.
     pub resource: String,
     /// Authorization servers that issue tokens for this resource.
     pub authorization_servers: Vec<String>,
@@ -758,5 +760,23 @@ mod tests {
             AuthConfig::from_env(),
             Err(ConfigError::InvalidMode(_))
         ));
+    }
+
+    #[test]
+    fn protected_resource_metadata_uses_the_given_resource_identifier() {
+        // Per RFC 9728, `resource` must be the canonical identifier the client
+        // calls — i.e. the MCP endpoint including its path, not just the host.
+        // remote.rs builds this as public_url + mcp_path (e.g. ".../mcp").
+        let meta = ProtectedResourceMetadata::new(
+            "https://mp.dev.example.com/mcp",
+            "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool",
+        );
+        assert_eq!(meta.resource, "https://mp.dev.example.com/mcp");
+        assert_eq!(
+            meta.authorization_servers,
+            vec!["https://cognito-idp.us-west-2.amazonaws.com/us-west-2_pool".to_string()]
+        );
+        // The resource must include the /mcp path, not be the bare host.
+        assert!(meta.resource.ends_with("/mcp"));
     }
 }

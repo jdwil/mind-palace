@@ -60,8 +60,14 @@ const PROTECTED_RESOURCE_PATH: &str = "/.well-known/oauth-protected-resource";
 #[derive(Clone)]
 struct AuthLayerState {
     authenticator: Authenticator,
-    /// This server's public URL, used as the `resource` in RFC 9728 metadata.
+    /// This server's public root URL, used to build the `WWW-Authenticate`
+    /// `resource_metadata` URL (`{public_url}/.well-known/oauth-protected-resource`).
     public_url: Arc<String>,
+    /// The canonical resource identifier the client actually calls
+    /// (`{public_url}{mcp_path}`, e.g. `https://host/mcp`). Per RFC 9728 this is
+    /// the `resource` value in the protected-resource metadata; it MUST match the
+    /// endpoint the client targets, or spec-compliant clients abort on mismatch.
+    resource_url: Arc<String>,
 }
 
 /// Extract the bearer token from the Authorization header, if present.
@@ -120,7 +126,7 @@ async fn auth_middleware(
 async fn protected_resource_metadata(State(state): State<AuthLayerState>) -> Response {
     match state.authenticator.auth_server_url() {
         Some(auth_server) => Json(ProtectedResourceMetadata::new(
-            state.public_url.as_str(),
+            state.resource_url.as_str(),
             auth_server,
         ))
         .into_response(),
@@ -148,6 +154,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = env_or("MP_BIND_ADDR", "0.0.0.0:8080");
     let mcp_path = env_or("MP_MCP_PATH", "/mcp");
     let public_url = Arc::new(env_or("MP_PUBLIC_URL", &format!("http://{bind_addr}")));
+    // The canonical resource identifier clients call = public root + MCP path.
+    // Advertised as RFC 9728 `resource`; must match what the client targets.
+    let resource_url = Arc::new(format!("{}{}", public_url.trim_end_matches('/'), mcp_path));
 
     // Build the shared WikiService once; the MCP service factory clones the Arc
     // per session so all sessions share the in-memory graph and AWS clients.
@@ -177,6 +186,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth_state = AuthLayerState {
         authenticator,
         public_url: public_url.clone(),
+        resource_url: resource_url.clone(),
     };
 
     // Host validation: relax by default (remote access via ALB/hostname needs
@@ -216,4 +226,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(addr = %bind_addr, path = %mcp_path, "Mind Palace remote MCP server listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn www_authenticate_points_at_root_wellknown_not_mcp_path() {
+        // The resource_metadata URL in the challenge must be the ROOT
+        // /.well-known/oauth-protected-resource — it must NOT include /mcp.
+        let v = www_authenticate_value("https://mp.dev.example.com");
+        assert_eq!(
+            v,
+            "Bearer resource_metadata=\"https://mp.dev.example.com/.well-known/oauth-protected-resource\""
+        );
+        assert!(v.ends_with("/.well-known/oauth-protected-resource\""));
+        assert!(!v.contains("/mcp"));
+    }
+
+    #[test]
+    fn www_authenticate_trims_trailing_slash_on_public_url() {
+        let v = www_authenticate_value("https://mp.dev.example.com/");
+        assert_eq!(
+            v,
+            "Bearer resource_metadata=\"https://mp.dev.example.com/.well-known/oauth-protected-resource\""
+        );
+    }
+
+    #[test]
+    fn resource_url_is_public_url_plus_mcp_path() {
+        // Mirrors the construction in main(): the RFC 9728 `resource` value.
+        let public_url = "https://mp.dev.example.com";
+        let mcp_path = "/mcp";
+        let resource_url = format!("{}{}", public_url.trim_end_matches('/'), mcp_path);
+        assert_eq!(resource_url, "https://mp.dev.example.com/mcp");
+
+        // Trailing slash on public_url must not produce a double slash.
+        let resource_url2 = format!(
+            "{}{}",
+            "https://mp.dev.example.com/".trim_end_matches('/'),
+            mcp_path
+        );
+        assert_eq!(resource_url2, "https://mp.dev.example.com/mcp");
+    }
 }
