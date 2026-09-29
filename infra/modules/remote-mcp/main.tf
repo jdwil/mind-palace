@@ -263,7 +263,7 @@ resource "aws_iam_role_policy" "task_runtime" {
   role = aws_iam_role.task.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid    = "S3Pages"
         Effect = "Allow"
@@ -297,7 +297,17 @@ resource "aws_iam_role_policy" "task_runtime" {
         Action   = ["bedrock:InvokeModel"]
         Resource = ["arn:aws:bedrock:${var.region}::foundation-model/${var.embedding_model}"]
       }
-    ]
+      ],
+      # Secrets resolution (Spec 4): granted ONLY when the AWS backend is enabled
+      # with a non-empty prefix, and scoped to that prefix (least privilege).
+      var.secrets_backend == "aws" && trimspace(var.secrets_arn_prefix) != "" ? [
+        {
+          Sid      = "ResolvePageSecrets"
+          Effect   = "Allow"
+          Action   = ["secretsmanager:GetSecretValue"]
+          Resource = ["${var.secrets_arn_prefix}*"]
+        }
+    ] : [])
   })
 }
 
@@ -339,6 +349,8 @@ resource "aws_ecs_task_definition" "mcp" {
       { name = "MIND_PALACE_VECTORS_INDEX", value = var.vectors_index },
       { name = "MIND_PALACE_BEDROCK_MODEL", value = var.embedding_model },
       { name = "MIND_PALACE_REGION", value = var.region },
+      { name = "MP_SECRETS_BACKEND", value = var.secrets_backend },
+      { name = "MP_SECRETS_ARN_PREFIX", value = var.secrets_arn_prefix },
       { name = "RUST_LOG", value = "mind_palace_mcp=info,info" },
       ],
       var.auth_mode == "oidc" ? [
