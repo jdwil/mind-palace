@@ -725,15 +725,30 @@ impl WikiService {
             .into_iter()
             .filter(|r| match g.get_node(&r.page_id) {
                 Some(node) => {
+                    // An archived page is removed from the graph but its node may
+                    // briefly still carry an Archived visibility if reloaded from
+                    // the store (archive preserves the node in DynamoDB). Never
+                    // surface it through search.
+                    if node.visibility == Visibility::Archived {
+                        return false;
+                    }
                     // Spec 3: inherited grants from containment ancestors count.
                     let access = g
                         .effective_access(&node.page_id)
                         .unwrap_or_else(|| node.access.clone());
                     ctx.can_see_page(&access)
                 }
-                // Node not in graph yet (eventual consistency): fall back to the
-                // vector-store partition decision already applied.
-                None => true,
+                // Fail CLOSED: a vector hit with no live graph node must NOT be
+                // returned. `archive_page` removes the node from the graph (and
+                // best-effort deletes the embedding); if that embedding survives
+                // — delete failed, eventual consistency, or the page was archived
+                // before the delete path existed — the stale vector would
+                // otherwise resurface an archived page whose version history can
+                // still hold scrubbed-but-sensitive content. The in-memory graph
+                // is the authoritative liveness+access source; no node = not
+                // visible. (Previously this returned `true`, which leaked
+                // archived pages into search.)
+                None => false,
             })
             .take(limit)
             .collect();
@@ -1333,6 +1348,16 @@ impl WikiService {
         let creator = ctx.user_id().ok_or_else(|| {
             MindPalaceError::AccessDenied("must be authenticated to create a group".into())
         })?;
+        // The `admins` group id is reserved: it is the source of truth for the
+        // global admin role. Refuse to (re)create it via the normal path, which
+        // would make the creator its sole manager+member — an instant, unaudited
+        // self-promotion to admin if the group were ever missing.
+        if id.is_admins() {
+            return Err(MindPalaceError::AccessDenied(format!(
+                "group id '{}' is reserved for the admin role and cannot be created",
+                GroupId::ADMINS
+            )));
+        }
         if store.get_group(&id).await?.is_some() {
             return Err(MindPalaceError::Validation(format!(
                 "group '{}' already exists",
@@ -1341,6 +1366,7 @@ impl WikiService {
         }
         let group = Group::new(id, name, creator);
         store.save_group(&group).await?;
+        self.audit_group_action(ctx, "group_create", group.id.as_str(), Some(creator));
         Ok(group)
     }
 
@@ -1354,6 +1380,11 @@ impl WikiService {
         ctx: &TenantContext,
     ) -> Result<Group, MindPalaceError> {
         let store = self.require_group_store()?;
+        // Resolve group membership so a global admin (member of the reserved
+        // `admins` group) passes the manager gate and is recorded correctly in
+        // the audit event. Without this, `ctx.membership` is empty and a
+        // group-based admin would be treated as a non-admin here.
+        let ctx = &self.resolve_ctx(ctx).await;
         let caller = ctx.user_id();
         let mut group = store
             .get_group(id)
@@ -1367,6 +1398,7 @@ impl WikiService {
         }
         group.add_member(member_email);
         store.save_group(&group).await?;
+        self.audit_group_action(ctx, "group_add_member", id.as_str(), Some(member_email));
         Ok(group)
     }
 
@@ -1378,6 +1410,11 @@ impl WikiService {
         ctx: &TenantContext,
     ) -> Result<Group, MindPalaceError> {
         let store = self.require_group_store()?;
+        // Resolve group membership so a global admin (member of the reserved
+        // `admins` group) passes the manager gate and is recorded correctly in
+        // the audit event. Without this, `ctx.membership` is empty and a
+        // group-based admin would be treated as a non-admin here.
+        let ctx = &self.resolve_ctx(ctx).await;
         let caller = ctx.user_id();
         let mut group = store
             .get_group(id)
@@ -1391,6 +1428,7 @@ impl WikiService {
         }
         group.remove_member(member_email);
         store.save_group(&group).await?;
+        self.audit_group_action(ctx, "group_remove_member", id.as_str(), Some(member_email));
         Ok(group)
     }
 
@@ -1413,6 +1451,11 @@ impl WikiService {
         ctx: &TenantContext,
     ) -> Result<Group, MindPalaceError> {
         let store = self.require_group_store()?;
+        // Resolve group membership so a global admin (member of the reserved
+        // `admins` group) passes the manager gate and is recorded correctly in
+        // the audit event. Without this, `ctx.membership` is empty and a
+        // group-based admin would be treated as a non-admin here.
+        let ctx = &self.resolve_ctx(ctx).await;
         let caller = ctx.user_id();
         let mut group = store
             .get_group(id)
@@ -1426,6 +1469,7 @@ impl WikiService {
         }
         group.add_manager(manager_email);
         store.save_group(&group).await?;
+        self.audit_group_action(ctx, "group_add_manager", id.as_str(), Some(manager_email));
         Ok(group)
     }
 
@@ -1439,6 +1483,11 @@ impl WikiService {
         ctx: &TenantContext,
     ) -> Result<Group, MindPalaceError> {
         let store = self.require_group_store()?;
+        // Resolve group membership so a global admin (member of the reserved
+        // `admins` group) passes the manager gate and is recorded correctly in
+        // the audit event. Without this, `ctx.membership` is empty and a
+        // group-based admin would be treated as a non-admin here.
+        let ctx = &self.resolve_ctx(ctx).await;
         let caller = ctx.user_id();
         let mut group = store
             .get_group(id)
@@ -1458,13 +1507,88 @@ impl WikiService {
         }
         group.remove_manager(manager_email);
         store.save_group(&group).await?;
+        self.audit_group_action(
+            ctx,
+            "group_remove_manager",
+            id.as_str(),
+            Some(manager_email),
+        );
         Ok(group)
     }
 
+    /// Emit a structured audit event for a group/admin mutation on the
+    /// `mind_palace::admin_audit` tracing target.
+    ///
+    /// This is an always-on sink (independent of whether a changelog store is
+    /// configured — group mutations do not write the page-shaped changelog) and
+    /// mirrors the existing `mind_palace::secret_audit` pattern. It records WHO
+    /// acted, WHAT they did, the target group and principal, and whether the
+    /// actor passed the gate as a global admin vs. a group manager — so a review
+    /// can distinguish an admin override from ordinary manager self-service.
+    fn audit_group_action(
+        &self,
+        ctx: &TenantContext,
+        action: &str,
+        group_id: &str,
+        target_principal: Option<&str>,
+    ) {
+        tracing::info!(
+            target: "mind_palace::admin_audit",
+            action = action,
+            actor = ctx.user_id().unwrap_or("<global>"),
+            via_admin = ctx.is_admin(),
+            group = group_id,
+            target = target_principal.unwrap_or(""),
+            "admin/group mutation"
+        );
+    }
+
+    /// List the current global admins — the members of the reserved `admins`
+    /// group. See-gated only in the sense that it requires the caller to be an
+    /// admin (mirrors the sensitivity of the data). Returns an empty list if the
+    /// admins group does not exist (never "everyone is admin").
+    pub async fn admin_list(&self, ctx: &TenantContext) -> Result<Vec<String>, MindPalaceError> {
+        let ctx = self.resolve_ctx(ctx).await;
+        if !ctx.is_admin() {
+            return Err(MindPalaceError::AccessDenied(
+                "only an admin may list admins".into(),
+            ));
+        }
+        let store = self.require_group_store()?;
+        match store.get_group(&GroupId::admins()).await? {
+            Some(group) => Ok(group.members),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Promote a user to global admin by adding them to the reserved `admins`
+    /// group. Routes through `group_add_member`, so it inherits the SAME
+    /// manager/admin gate and audit — only an existing admins-group manager, a
+    /// global admin, or the `Global` context may promote a new admin.
+    pub async fn admin_grant(
+        &self,
+        email: &str,
+        ctx: &TenantContext,
+    ) -> Result<Group, MindPalaceError> {
+        self.group_add_member(&GroupId::admins(), email, ctx).await
+    }
+
+    /// Demote a global admin by removing them from the reserved `admins` group.
+    /// Routes through `group_remove_member` (same gate + audit).
+    pub async fn admin_revoke(
+        &self,
+        email: &str,
+        ctx: &TenantContext,
+    ) -> Result<Group, MindPalaceError> {
+        self.group_remove_member(&GroupId::admins(), email, ctx)
+            .await
+    }
+
     /// A caller may manage a group's membership if they are a manager of it, or
-    /// are the untenanted Global admin.
+    /// are a global admin (the untenanted `Global` context, or a member of the
+    /// reserved `admins` group).
     fn caller_is_manager(&self, group: &Group, caller: Option<&str>, ctx: &TenantContext) -> bool {
-        if ctx.tenant_id.is_none() && ctx.identity.is_global() {
+        if ctx.is_admin() {
             return true;
         }
         matches!(caller, Some(email) if group.is_manager(email))
