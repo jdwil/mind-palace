@@ -319,6 +319,12 @@ pub struct GroupMemberParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AdminEmailParams {
+    #[schemars(description = "Email of the user to promote to / demote from global admin")]
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetSecretParams {
     #[schemars(description = "Slug of the page that carries the secret reference")]
     pub slug: String,
@@ -815,6 +821,102 @@ impl MindPalaceMcpServer {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let output: Vec<serde_json::Value> = groups.iter().map(group_to_json).collect();
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Promote a principal to manager of a group (a manager may also mutate membership). Requires the caller to be a manager of the group or a global admin. The new manager is also made a member."
+    )]
+    async fn wiki_group_add_manager(
+        &self,
+        Parameters(params): Parameters<GroupMemberParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let group = self
+            .service
+            .group_add_manager(&GroupId::new(params.id), &params.member, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = group_to_json(&group);
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Demote a manager of a group (they remain a member). Requires the caller to be a manager of the group or a global admin. Refuses to remove the last manager so a group can never become unmanageable."
+    )]
+    async fn wiki_group_remove_manager(
+        &self,
+        Parameters(params): Parameters<GroupMemberParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let group = self
+            .service
+            .group_remove_manager(&GroupId::new(params.id), &params.member, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = group_to_json(&group);
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "List the current global admins (members of the reserved 'admins' group). Requires the caller to be a global admin."
+    )]
+    async fn wiki_admin_list(&self, ext: Extensions) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let admins = self
+            .service
+            .admin_list(&ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = serde_json::json!({ "admins": admins });
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Promote a user to GLOBAL ADMIN by adding them to the reserved 'admins' group. A global admin can read/manage any page and manage any group. Privileged: only an existing admins-group manager or a global admin may promote a new admin. Audited."
+    )]
+    async fn wiki_admin_grant(
+        &self,
+        Parameters(params): Parameters<AdminEmailParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let group = self
+            .service
+            .admin_grant(&params.email, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = group_to_json(&group);
+        let content =
+            Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(
+        description = "Demote a global admin by removing them from the reserved 'admins' group. Privileged: only an existing admins-group manager or a global admin may do this. Audited."
+    )]
+    async fn wiki_admin_revoke(
+        &self,
+        Parameters(params): Parameters<AdminEmailParams>,
+        ext: Extensions,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx_for(&ext);
+        let group = self
+            .service
+            .admin_revoke(&params.email, &ctx)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let output = group_to_json(&group);
         let content =
             Content::json(output).map_err(|e| McpError::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![content]))

@@ -89,6 +89,24 @@ impl GroupId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The reserved group id whose members are treated as global admins.
+    ///
+    /// Membership of this group is the SINGLE source of truth for the admin
+    /// role — there is no separate role field. The id is reserved: creating a
+    /// group with this id is refused by the service so the admin set can never
+    /// be shadowed or hijacked by a self-created group.
+    pub const ADMINS: &'static str = "admins";
+
+    /// The reserved admins group id as a [`GroupId`].
+    pub fn admins() -> Self {
+        Self(Self::ADMINS.to_string())
+    }
+
+    /// True if this is the reserved admins group id.
+    pub fn is_admins(&self) -> bool {
+        self.0 == Self::ADMINS
+    }
 }
 
 /// Base openness of a page, replacing the "role" the old `Visibility` enum played.

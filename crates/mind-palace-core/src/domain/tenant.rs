@@ -80,6 +80,12 @@ impl GroupMembership {
     pub fn contains(&self, group: &GroupId) -> bool {
         self.groups.iter().any(|g| g == group)
     }
+
+    /// True if the identity is a member of the reserved `admins` group and is
+    /// therefore a global admin (Spec: admin role via reserved group).
+    pub fn is_admin(&self) -> bool {
+        self.groups.iter().any(|g| g.is_admins())
+    }
 }
 
 /// Context representing who is making the request and what they can see.
@@ -202,6 +208,28 @@ impl TenantContext {
         self.can_edit(access, &self.membership)
     }
 
+    /// Whether this context is a GLOBAL ADMIN — a superuser for the whole
+    /// knowledge base (may see/edit any page and manage any group's membership
+    /// and grants).
+    ///
+    /// Two ways to be an admin, both resolved SERVER-SIDE (never client-supplied):
+    /// 1. The trusted, untenanted `Identity::Global` local/stdio context — the
+    ///    historical single-user superuser. Preserved for backward compatibility.
+    /// 2. An authenticated identity whose resolved group membership includes the
+    ///    reserved `admins` group (see [`GroupMembership::is_admin`]). This is the
+    ///    first-class admin role for the remote/web transports, where `Global`
+    ///    never applies.
+    ///
+    /// Membership is resolved once per request by the service layer
+    /// (`resolve_ctx`); if that resolution fails it yields an empty membership,
+    /// so admin is denied on error (fail-closed).
+    pub fn is_admin(&self) -> bool {
+        if self.tenant_id.is_none() && self.identity.is_global() {
+            return true;
+        }
+        self.membership.is_admin()
+    }
+
     /// Returns the user ID if this context's identity is an authenticated user.
     pub fn user_id(&self) -> Option<&str> {
         self.identity.user_id()
@@ -276,6 +304,11 @@ impl TenantContext {
             return true;
         }
 
+        // A global admin (member of the reserved `admins` group) sees everything.
+        if membership.is_admin() {
+            return true;
+        }
+
         // Public pages are visible to any non-anonymous context.
         if access.base_visibility == BaseVisibility::Public {
             return true;
@@ -317,6 +350,10 @@ impl TenantContext {
         if self.tenant_id.is_none() && self.identity.is_global() {
             return true;
         }
+        // A global admin (member of the reserved `admins` group) may edit anything.
+        if membership.is_admin() {
+            return true;
+        }
         if let Some(email) = self.user_id() {
             if access.is_owner(email) {
                 return true;
@@ -333,7 +370,7 @@ impl TenantContext {
     /// untenanted `Global` admin). A non-owner cannot add a grant, which blocks
     /// the Outline-class self-escalation.
     pub fn can_manage_grants(&self, access: &PageAccess) -> bool {
-        if self.tenant_id.is_none() && self.identity.is_global() {
+        if self.is_admin() {
             return true;
         }
         match self.user_id() {
@@ -489,6 +526,36 @@ mod access_tests {
         let none = GroupMembership::empty();
         assert!(ctx.can_see_access(&private_owned(), &none));
         assert!(ctx.can_edit(&private_owned(), &none));
+    }
+
+    #[test]
+    fn group_admin_sees_edits_and_manages_everything() {
+        // A remote authenticated user who is a member of the reserved `admins`
+        // group is a global admin: sees/edits any page and can manage grants,
+        // even though they are neither owner nor grantee.
+        let admin_member = GroupMembership::new(vec![GroupId::admins()]);
+        let ctx = TenantContext::user("admin@x.com").with_membership(admin_member.clone());
+        assert!(ctx.can_see_access(&private_owned(), &admin_member));
+        assert!(ctx.can_edit(&private_owned(), &admin_member));
+        assert!(ctx.can_manage_grants(&private_owned()));
+        assert!(ctx.is_admin());
+
+        // A user in some OTHER group is NOT an admin.
+        let other = GroupMembership::new(vec![GroupId::new("eng")]);
+        let ctx2 = TenantContext::user("dev@x.com").with_membership(other.clone());
+        assert!(!ctx2.can_see_access(&private_owned(), &other));
+        assert!(!ctx2.can_edit(&private_owned(), &other));
+        assert!(!ctx2.can_manage_grants(&private_owned()));
+        assert!(!ctx2.is_admin());
+    }
+
+    #[test]
+    fn admins_group_id_is_reserved() {
+        assert!(GroupId::admins().is_admins());
+        assert!(GroupId::new("admins").is_admins());
+        assert!(!GroupId::new("eng").is_admins());
+        assert!(GroupMembership::new(vec![GroupId::admins()]).is_admin());
+        assert!(!GroupMembership::new(vec![GroupId::new("eng")]).is_admin());
     }
 
     // --- Criterion 6: migration mapping has no increase in openness ---

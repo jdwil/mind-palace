@@ -338,7 +338,20 @@ impl KnowledgeGraph {
     /// Visibility check for a node that respects containment inheritance
     /// (Spec 3): resolves the node's effective access (own grants ∪ ancestor
     /// grants) and applies the Spec 2 view rule against it.
+    ///
+    /// Archived nodes are NEVER visible through any graph read path. Archiving
+    /// removes a node from the in-memory graph, but the node is preserved in the
+    /// backing store (so it can be unarchived), and reloads (`list_pages` reloads
+    /// the graph on every call, and process restarts rebuild it from the store)
+    /// bring the archived node back into memory with `Visibility::Archived`. The
+    /// access model (`PageAccess`) intentionally does not track archived state,
+    /// so without this guard an archived page's preserved grants would let it
+    /// resurface via list/traverse/find/index/search. Excluding archived nodes
+    /// here is the single chokepoint that keeps every graph-based read fail-closed.
     fn can_see_node(&self, node: &GraphNode, ctx: &TenantContext) -> bool {
+        if node.visibility == Visibility::Archived {
+            return false;
+        }
         match self.effective_access(&node.page_id) {
             Some(access) => ctx.can_see_page(&access),
             None => ctx.can_see_page(&node.access),
