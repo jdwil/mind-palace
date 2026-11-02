@@ -337,11 +337,14 @@ impl TenantContext {
 
     /// Whether this identity may EDIT the page (Spec 2 §3 `can_edit`).
     ///
-    /// - `Anonymous` → never.
+    /// - `Anonymous` → never (no identity to attribute an edit to).
     /// - `Global` (untenanted admin) → always.
-    /// - owner → always.
-    /// - a `User(email)` grant with `Level::Edit`, or a `Group(g)` Edit grant
-    ///   where the identity is a member of `g`.
+    /// - global admin (member of the reserved `admins` group) → always.
+    /// - `Public` page → ANY authenticated user may edit (wiki-style
+    ///   open-by-default). Editing is only restricted once the page is made
+    ///   `Private` and grants are applied.
+    /// - `Private` page → owner, OR a `User(email)` grant with `Level::Edit`,
+    ///   OR a `Group(g)` Edit grant where the identity is a member of `g`.
     ///   `Level::Edit` implies view; a View-only grant does NOT grant edit.
     pub fn can_edit(&self, access: &PageAccess, membership: &GroupMembership) -> bool {
         if self.identity.is_anonymous() {
@@ -352,6 +355,10 @@ impl TenantContext {
         }
         // A global admin (member of the reserved `admins` group) may edit anything.
         if membership.is_admin() {
+            return true;
+        }
+        // Open-by-default: a Public page is editable by any authenticated user.
+        if access.base_visibility == BaseVisibility::Public {
             return true;
         }
         if let Some(email) = self.user_id() {
@@ -443,6 +450,39 @@ mod access_tests {
         let none = GroupMembership::empty();
         assert!(!ctx.can_see_access(&private_owned(), &none));
         assert!(!ctx.can_edit(&private_owned(), &none));
+    }
+
+    // --- Open-by-default: any authenticated user may edit a Public page ---
+
+    #[test]
+    fn any_authenticated_user_can_edit_public_page() {
+        let none = GroupMembership::empty();
+        // A non-owner authenticated user can edit a Public page.
+        let stranger = TenantContext::user("stranger@x.com");
+        assert!(stranger.can_see_access(&public(), &none));
+        assert!(stranger.can_edit(&public(), &none));
+        // The owner can still edit it too.
+        let owner = TenantContext::user("owner@x.com");
+        assert!(owner.can_edit(&public(), &none));
+    }
+
+    #[test]
+    fn anonymous_cannot_edit_public_page() {
+        // Anonymous has no identity to attribute an edit to — view only.
+        let ctx = TenantContext::anonymous();
+        let none = GroupMembership::empty();
+        assert!(ctx.can_see_access(&public(), &none));
+        assert!(!ctx.can_edit(&public(), &none));
+    }
+
+    #[test]
+    fn making_a_page_private_restricts_editing_again() {
+        // Once access control is applied (Private), a non-owner without an
+        // Edit grant can no longer edit.
+        let none = GroupMembership::empty();
+        let stranger = TenantContext::user("stranger@x.com");
+        assert!(stranger.can_edit(&public(), &none)); // open while Public
+        assert!(!stranger.can_edit(&private_owned(), &none)); // restricted once Private
     }
 
     #[test]

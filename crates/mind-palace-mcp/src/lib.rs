@@ -206,7 +206,7 @@ pub struct CreateParams {
     )]
     pub visibility: Option<String>,
     #[schemars(
-        description = "Spec 2 base visibility: 'public' (open to everyone incl. anonymous) or 'private' (owner + explicit grants only). If omitted, inferred from `visibility`. Owner is set to the caller."
+        description = "Spec 2 base visibility: 'public' (open — everyone incl. anonymous can VIEW, and any authenticated user can EDIT) or 'private' (owner + explicit grants only; editing restricted to owner and Edit-grantees). If omitted, inferred from `visibility`. Owner is set to the caller. Make a page private to restrict editing."
     )]
     pub base_visibility: Option<String>,
     #[schemars(
