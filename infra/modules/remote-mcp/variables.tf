@@ -187,6 +187,24 @@ variable "public_url" {
   default     = ""
 }
 
+# --- Secrets backend (Spec 4: wiki_get_secret resolution) ---
+
+variable "secrets_backend" {
+  description = "Secrets backend for resolving page secret references (MP_SECRETS_BACKEND). 'none' (default) stores references but never resolves them; 'aws' enables the AWS Secrets Manager resolver restricted to secrets_arn_prefix."
+  type        = string
+  default     = "none"
+  validation {
+    condition     = contains(["none", "aws"], var.secrets_backend)
+    error_message = "secrets_backend must be one of: none, aws."
+  }
+}
+
+variable "secrets_arn_prefix" {
+  description = "ARN prefix the AWS secrets resolver is restricted to (MP_SECRETS_ARN_PREFIX). Required when secrets_backend = 'aws'. The task IAM role is granted secretsmanager:GetSecretValue on '<prefix>*' only (least privilege). Example: arn:aws:secretsmanager:us-west-2:086261225885:secret:agents/mind-palace/"
+  type        = string
+  default     = ""
+}
+
 # --- HTTPS ---
 
 variable "acm_certificate_arn" {
